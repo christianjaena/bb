@@ -1,54 +1,54 @@
 import { NextResponse } from "next/server";
-import { generateGeminiTextDetailed } from "@/lib/gemini";
 
 export const dynamic = "force-dynamic";
 
-type GamePrompts = {
-  wouldYouRather: string[];
-  whoMoreLikely: string[];
-  truthOrDare: string[];
-  howWellDoYouKnowMe: string[];
+type DailyQuestions = {
+  wouldYouRather: string;
+  whoMoreLikely: string;
+  truth: string;
+  dare: string;
 };
 
-function parsePrompts(text: string): GamePrompts | null {
+async function fetchQuestion(path: string) {
   try {
-    const json = text.match(/\{[\s\S]*\}/)?.[0];
-    if (!json) return null;
-    const value = JSON.parse(json);
-    const validList = (items: unknown, requireOr = false) =>
-      Array.isArray(items) && items.length >= 5 && items.length <= 8 && items.every((item) =>
-        typeof item === "string" && item.trim().length >= 12 && item.trim().length <= 180 &&
-        (!requireOr || item.split(/,\s+or\s+/i).length === 2),
-      );
-
-    if (
-      !validList(value?.wouldYouRather, true) ||
-      !validList(value?.whoMoreLikely) ||
-      !validList(value?.truthOrDare) ||
-      !validList(value?.howWellDoYouKnowMe)
-    ) return null;
-
-    return value as GamePrompts;
+    const response = await fetch(`https://api.truthordarebot.xyz${path}`, {
+      cache: "no-store",
+      headers: { "User-Agent": "OurLittleWorld/1.0 (daily couple game)" },
+      signal: AbortSignal.timeout(4_000),
+    });
+    if (!response.ok) return "";
+    const data = await response.json();
+    const question = typeof data?.question === "string" ? data.question.replace(/\s+/g, " ").trim() : "";
+    return question.length >= 12 && question.length <= 180 ? question : "";
   } catch {
-    return null;
+    return "";
   }
 }
 
-export async function GET(request: Request) {
-  const date = new URL(request.url).searchParams.get("date") ?? "today";
-  const generation = await generateGeminiTextDetailed(
-    `Write a fresh set of playful, kind, non-explicit questions for a long-distance couple to play on ${date} (Asia/Manila). Return only JSON with four arrays, each with exactly 5 string questions: wouldYouRather (each item must have exactly one comma followed by "or" separating two short choices), whoMoreLikely, truthOrDare (alternate Truth and Dare, keep dares safe and doable over a video call), howWellDoYouKnowMe. Keep every question natural, specific, warm, and under 20 words. Avoid repeating generic questions. Shape: {"wouldYouRather":["..."],"whoMoreLikely":["..."],"truthOrDare":["..."],"howWellDoYouKnowMe":["..."]}`,
-    { responseMimeType: "application/json" },
+function normalizeWouldYouRather(question: string) {
+  const value = question.replace(/^would you rather\s*/i, "").replace(/[?!.]+$/, "").trim();
+  const choices = value.split(/\s+or\s+/i);
+  if (choices.length !== 2 || choices.some((choice) => choice.trim().length < 2)) return "";
+  return `${choices[0].trim()}, or ${choices[1].trim()}?`;
+}
+
+export async function GET() {
+  const [wouldYouRatherApi, truth, dare, whoMoreLikely] = await Promise.all([
+    fetchQuestion("/api/wyr?rating=pg"),
+    fetchQuestion("/v1/truth?rating=pg"),
+    fetchQuestion("/api/dare?rating=pg"),
+    fetchQuestion("/api/paranoia?rating=pg"),
+  ]);
+  const prompts: DailyQuestions = {
+    wouldYouRather: normalizeWouldYouRather(wouldYouRatherApi),
+    whoMoreLikely,
+    truth,
+    dare,
+  };
+  const hasQuestions = Object.values(prompts).some(Boolean);
+
+  return NextResponse.json(
+    { prompts, source: hasQuestions ? "daily-api" : "unavailable", date: new Date().toISOString().slice(0, 10) },
+    { headers: { "Cache-Control": "no-store" } },
   );
-  const prompts = generation.text ? parsePrompts(generation.text) : null;
-
-  if (!prompts) {
-    console.error(`[Daily games] Generation failed (${generation.reason ?? "invalid_generated_json"}).`);
-    return NextResponse.json(
-      { error: "Fresh game prompts are unavailable." },
-      { status: 503, headers: { "Cache-Control": "no-store" } },
-    );
-  }
-
-  return NextResponse.json({ prompts, source: "ai", date }, { headers: { "Cache-Control": "no-store" } });
 }

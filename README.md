@@ -11,25 +11,23 @@ npm run dev
 
 Then open http://localhost:3000.
 
-To enable Gemini generated daily recommendations and captions, copy
-`.env.example` to `.env.local`, add your `GEMINI_API_KEY`, then restart the dev
-server. For a deployment, configure the same variable in its environment
-settings. Daily song, movie, and series picks are generated once per Manila day
-and cached in the browser. The Play tab also fetches a fresh set of games once
-per day. If generation fails, the app uses the most recently cached picks or a
-small offline recommendation set, and built-in game questions keep Play usable.
+Song and movie picks come from the public iTunes Search API, with a SampleAPIs comedy catalog backup and a rotating local backup list. Series picks come from TVmaze. Short lyric highlights are looked up through LRCLIB and link back to their source. These sources do not require an API key. Recommendations are selected once per Manila day and cached in the browser. TVmaze data is CC BY-SA and is attributed in the app.
+
+Gemini remains optional for daily captions. Play fetches its daily Would You Rather, Truth, Dare, and Who's More Likely questions from the keyless Truth or Dare API and caches that day's set in the browser. Play does not show locally stored question prompts when the API is unavailable. Daily recommendations use the most recently cached picks or an offline set if public catalogs are unavailable.
 
 ## Deploy
 
-Push to GitHub and import the repo into Vercel.
+Push to GitHub and import the repo into Vercel. Add any desired API keys in the Vercel project environment settings.
 
 ## Current stack
 
 - Next.js + TypeScript
 - Tailwind CSS
-- Browser localStorage for memories/check-ins
-- No database required
-- Optional Gemini text generation for daily captions, recommendations, and games
+- Browser localStorage for memories/check-ins and daily recommendation caching
+- iTunes Search API, SampleAPIs, and TVmaze for public media catalogs
+- LRCLIB for short linked lyric highlights
+- Optional Gemini text generation for daily captions
+- Truth or Dare API for daily game prompts
 
 ## Design direction
 

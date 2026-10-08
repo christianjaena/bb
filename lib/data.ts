@@ -1,5 +1,5 @@
 ﻿export const RELATIONSHIP_CONFIG = {
-  startDate: "2026-05-28",
+  startDate: "2026-05-15",
   cities: {
     home: "Manila",
     away: "Auckland",

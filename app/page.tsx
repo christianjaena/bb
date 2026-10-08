@@ -2,13 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  HOW_WELL_DO_YOU_KNOW_ME,
-  RELATIONSHIP_CONFIG,
-  TRUTH_OR_DARE_QUESTIONS,
-  WHO_MORE_LIKELY,
-  WOULD_YOU_RATHER,
-} from "@/lib/data";
+import { RELATIONSHIP_CONFIG } from "@/lib/data";
 import { createShareableUrl } from "@/lib/share";
 
 const navItems = [
@@ -34,11 +28,13 @@ type DailySong = {
   link: string;
   excerpt: string;
   previewUrl?: string;
+  lyricHighlight?: string;
+  lyricsLink?: string;
 };
 
 type DailyRecommendations = {
   song: DailySong | null;
-  movie: { title: string; year: number; poster: string; note: string; link: string } | null;
+  movie: { title: string; year: number; poster: string; note: string; link: string; source?: string } | null;
   series: { title: string; years: string; poster: string; note: string; link: string } | null;
   warnings?: string[];
 };
@@ -55,22 +51,22 @@ const OFFLINE_RECOMMENDATIONS: DailyRecommendations = {
     link: "https://music.apple.com/us/search?term=Can%27t%20Help%20Falling%20in%20Love%20Elvis%20Presley",
     excerpt: "A soft classic for your next kitchen slow dance.",
   },
-  movie: { title: "Set It Up", year: 2018, poster: "", note: "A bright, easy watch with clever schemes and lovely chemistry.", link: "https://www.themoviedb.org/search?query=Set%20It%20Up" },
+  movie: { title: "Set It Up", year: 2018, poster: "", note: "A bright, easy watch with clever schemes and lovely chemistry.", link: "https://itunes.apple.com/search?term=Set%20It%20Up&entity=movie&country=ph" },
   series: { title: "Dash & Lily", years: "2020", poster: "", note: "A playful romance told through notes, dares, and holiday magic.", link: "https://www.tvmaze.com/search?q=Dash+%26+Lily" },
 };
 
 type GamePrompts = {
-  wouldYouRather: string[];
-  whoMoreLikely: string[];
-  truthOrDare: string[];
-  howWellDoYouKnowMe: string[];
+  wouldYouRather: string;
+  whoMoreLikely: string;
+  truth: string;
+  dare: string;
 };
 
 function isGamePrompts(value: unknown): value is GamePrompts {
   if (!value || typeof value !== "object") return false;
   const prompts = value as Partial<GamePrompts>;
-  return [prompts.wouldYouRather, prompts.whoMoreLikely, prompts.truthOrDare, prompts.howWellDoYouKnowMe]
-    .every((list) => Array.isArray(list) && list.length >= 5 && list.every((item) => typeof item === "string"));
+  return [prompts.wouldYouRather, prompts.whoMoreLikely, prompts.truth, prompts.dare]
+    .every((question) => typeof question === "string");
 }
 
 function LoadingMessage({ children }: { children: string }) {
@@ -84,6 +80,23 @@ function LoadingMessage({ children }: { children: string }) {
 
 function todayKey() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila" }).format(new Date());
+}
+
+function posterFallback(title: string) {
+  const safeTitle = title.replace(/[&<>"']/g, (character) => {
+    if (character === "&") return "&amp;";
+    if (character === "<") return "&lt;";
+    if (character === ">") return "&gt;";
+    if (character === '"') return "&quot;";
+    return "&apos;";
+  });
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600"><defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#7894b2"/><stop offset=".55" stop-color="#dca68f"/><stop offset="1" stop-color="#59465e"/></linearGradient><radialGradient id="light"><stop stop-color="#fff1d4" stop-opacity=".85"/><stop offset="1" stop-color="#fff1d4" stop-opacity="0"/></radialGradient></defs><rect width="400" height="600" fill="url(#bg)"/><circle cx="280" cy="170" r="190" fill="url(#light)"/><path d="M0 410 Q120 330 220 425 T440 390 V620 H0Z" fill="#292c40" fill-opacity=".5"/><text x="200" y="90" text-anchor="middle" fill="#fffaf4" font-family="Georgia,serif" font-size="15" letter-spacing="5">TONIGHT'S PICK</text><foreignObject x="30" y="430" width="340" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;color:#fffaf4;font-family:Georgia,serif;font-size:30px;font-weight:bold;line-height:1.15">${safeTitle}</div></foreignObject></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function posterSource(url: string, title: string) {
+  if (url.startsWith("data:image/")) return url;
+  return `/api/daily-recommendations?poster=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}`;
 }
 
 function formatTime(zone: string, date: Date) {
@@ -179,7 +192,7 @@ export default function HomePage() {
   const [gamePrompts, setGamePrompts] = useState<GamePrompts | null>(null);
   const [gamePromptsDate, setGamePromptsDate] = useState("");
   const [gameLoading, setGameLoading] = useState(false);
-  const [gameFallback, setGameFallback] = useState(false);
+  const [gameError, setGameError] = useState(false);
   const [weather, setWeather] = useState<{ manila: { temperature: number; code: number }; auckland: { temperature: number; code: number } } | null>(null);
   const [weatherUnavailable, setWeatherUnavailable] = useState(false);
   const [clockNow, setClockNow] = useState(() => new Date(0));
@@ -190,12 +203,7 @@ export default function HomePage() {
   const [letterUrl, setLetterUrl] = useState("");
   const [letterStatus, setLetterStatus] = useState("");
   const [savingLetter, setSavingLetter] = useState(false);
-  const [ratherIndex, setRatherIndex] = useState(0);
-  const [likelyIndex, setLikelyIndex] = useState(0);
-  const [dareIndex, setDareIndex] = useState(0);
-  const [knowIndex, setKnowIndex] = useState(0);
   const [selectedChoices, setSelectedChoices] = useState<Record<string, string>>({});
-  const [gameStatus, setGameStatus] = useState("");
   const kmApart = distanceKm();
   const hoursAway = Math.abs(timezoneOffsetMinutes("Asia/Manila", clockNow) - timezoneOffsetMinutes("Pacific/Auckland", clockNow)) / 60;
 
@@ -206,7 +214,7 @@ export default function HomePage() {
     let loadedRecommendationDate = todayKey();
 
     const loadRecommendations = async (date: string) => {
-      const cacheKey = `daily-recommendations-${date}`;
+      const cacheKey = `daily-public-recommendations-v8-${date}`;
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
@@ -259,7 +267,7 @@ export default function HomePage() {
         let previousDate = "";
         try {
           for (const key of Object.keys(localStorage)) {
-            const cachedDate = key.startsWith("daily-recommendations-") ? key.slice("daily-recommendations-".length) : "";
+            const cachedDate = key.startsWith("daily-public-recommendations-v8-") ? key.slice("daily-public-recommendations-v8-".length) : "";
             if (cachedDate && cachedDate < date && cachedDate > previousDate) {
               const cached = JSON.parse(localStorage.getItem(key) || "null") as DailyRecommendations | null;
               if (hasDailyPicks(cached)) {
@@ -342,18 +350,20 @@ export default function HomePage() {
     if (gamePrompts && gamePromptsDate === date) return;
 
     let active = true;
-    const cacheKey = `daily-games-${date}`;
+    const cacheKey = `daily-games-api-v1-${date}`;
     setGameLoading(true);
-    setGameFallback(false);
+    setGameError(false);
 
     void (async () => {
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (isGamePrompts(parsed)) {
-            setGamePrompts(parsed);
+          const cachedPrompts = parsed?.prompts ?? parsed;
+          if (isGamePrompts(cachedPrompts)) {
+            setGamePrompts(cachedPrompts);
             setGamePromptsDate(date);
+            setGameError(parsed?.source === "unavailable");
             setGameLoading(false);
             return;
           }
@@ -370,21 +380,22 @@ export default function HomePage() {
         if (!active) return;
         setGamePrompts(data.prompts);
         setGamePromptsDate(date);
+        setGameError(data.source === "unavailable");
         try {
-          localStorage.setItem(cacheKey, JSON.stringify(data.prompts));
+          localStorage.setItem(cacheKey, JSON.stringify({ prompts: data.prompts, source: data.source }));
         } catch {
-          // Keep generated questions in memory for this visit.
+          // Keep today's questions in memory for this visit.
         }
       } catch {
         if (!active) return;
         setGamePrompts({
-          wouldYouRather: WOULD_YOU_RATHER,
-          whoMoreLikely: WHO_MORE_LIKELY,
-          truthOrDare: TRUTH_OR_DARE_QUESTIONS,
-          howWellDoYouKnowMe: HOW_WELL_DO_YOU_KNOW_ME,
+          wouldYouRather: "",
+          whoMoreLikely: "",
+          truth: "",
+          dare: "",
         });
         setGamePromptsDate(date);
-        setGameFallback(true);
+        setGameError(true);
       } finally {
         if (active) setGameLoading(false);
       }
@@ -393,15 +404,11 @@ export default function HomePage() {
     return () => { active = false; };
   }, [tab, gamePrompts, gamePromptsDate]);
 
-  const ratherQuestions = gamePrompts?.wouldYouRather ?? WOULD_YOU_RATHER;
-  const likelyQuestions = gamePrompts?.whoMoreLikely ?? WHO_MORE_LIKELY;
-  const dareQuestions = gamePrompts?.truthOrDare ?? TRUTH_OR_DARE_QUESTIONS;
-  const knowQuestions = gamePrompts?.howWellDoYouKnowMe ?? HOW_WELL_DO_YOU_KNOW_ME;
-  const question = ratherQuestions[ratherIndex % ratherQuestions.length];
+  const question = gamePrompts?.wouldYouRather ?? "";
   const [optionA = question, optionB = "Pick the other option."] = question.split(", or ");
-  const likelyPrompt = likelyQuestions[likelyIndex % likelyQuestions.length];
-  const darePrompt = dareQuestions[dareIndex % dareQuestions.length];
-  const knowPrompt = knowQuestions[knowIndex % knowQuestions.length];
+  const likelyPrompt = gamePrompts?.whoMoreLikely ?? "";
+  const truthPrompt = gamePrompts?.truth ?? "";
+  const darePrompt = gamePrompts?.dare ?? "";
 
   const createLetter = async () => {
     if (!body.trim()) {
@@ -443,32 +450,16 @@ export default function HomePage() {
     }
   };
 
-  const recordGameChoice = (type: string, prompt: string, choice: string) => {
-    const record = {
-      id: crypto.randomUUID(),
-      type,
-      prompt,
-      choice,
-      createdAt: new Date().toISOString(),
-    };
+  const selectGameChoice = (type: string, choice: string) => {
     setSelectedChoices((previous) => ({ ...previous, [type]: choice }));
-
-    try {
-      const stored = JSON.parse(localStorage.getItem("little-game-choices") || "[]");
-      const previous = Array.isArray(stored) ? stored : [];
-      localStorage.setItem("little-game-choices", JSON.stringify([record, ...previous].slice(0, 10)));
-      setGameStatus("Saved on this device. Bring your answer to the next call.");
-    } catch {
-      setGameStatus("Your answer is picked, but this browser couldn't save it.");
-    }
   };
 
-  const choiceButton = (type: string, prompt: string, choice: string, label = choice) => (
+  const choiceButton = (type: string, choice: string, label = choice) => (
     <button
       key={choice}
       className={`btn choice-button ${selectedChoices[type] === choice ? "selected" : ""}`}
       aria-pressed={selectedChoices[type] === choice}
-      onClick={() => recordGameChoice(type, prompt, choice)}
+      onClick={() => selectGameChoice(type, choice)}
     >
       {label}
     </button>
@@ -572,7 +563,7 @@ export default function HomePage() {
                         <span className="timer-unit"><strong>{String(togetherFor.minutes).padStart(2, "0")}</strong><small>minutes</small></span>
                         <span className="timer-unit"><strong>{String(togetherFor.seconds).padStart(2, "0")}</strong><small>seconds</small></span>
                       </div>
-                      <div className="stat-label">together since May 28, 2026</div>
+                      <div className="stat-label">together since May 15, 2026</div>
                     </div>
                     <div className="relationship-stat relationship-km">
                       <div className="stat-num"><span className="stat-world" aria-hidden="true">🌍</span> {kmApart.toLocaleString()}</div>
@@ -585,61 +576,84 @@ export default function HomePage() {
             <section className="section recommendations" aria-label="Songs and shows for us">
               <div className="recommendation-heading">
                 <h2>Daily Recommendations</h2>
-                <p>A new song, movie, and series picked from public catalogs each day.</p>
               </div>
               {dailyRecommendations ? (
                 <>
                 {recommendationFallback ? <p className="recommendation-fallback" role="status">{recommendationStatus}</p> : null}
                 <div className="recommendation-grid">
-                  <article className="watch-song">
-                    <div className="eyebrow">A song for us</div>
+                  <article className="recommendation-card">
                     {dailyRecommendations.song ? (
                       <>
-                        <div className="song-header">
-                          <div className="song-art-placeholder" aria-hidden="true">♫</div>
-                          <div>
+                        <div className="recommendation-art recommendation-art-song">
+                          <div className="recommendation-art-placeholder" aria-hidden="true">♫</div>
+                          {dailyRecommendations.song.cover ? (
+                            <img
+                              className="recommendation-cover"
+                              src={posterSource(dailyRecommendations.song.cover, dailyRecommendations.song.title)}
+                              alt={`${dailyRecommendations.song.album || dailyRecommendations.song.title} album cover`}
+                              loading="lazy"
+                              onError={(event) => { event.currentTarget.style.display = "none"; }}
+                            />
+                          ) : null}
+                          <span>Our song today</span>
+                        </div>
+                        <div className="recommendation-details">
+                          <span className="recommendation-type">Song</span>
+                          <div className="recommendation-copy">
                             <h3>{dailyRecommendations.song.title}</h3>
                             <p>{dailyRecommendations.song.artist}</p>
                           </div>
+                          <div className="recommendation-highlight">
+                            <p>{dailyRecommendations.song.lyricHighlight ? `“${dailyRecommendations.song.lyricHighlight}”` : dailyRecommendations.song.excerpt}</p>
+                            {dailyRecommendations.song.lyricsLink ? <a href={dailyRecommendations.song.lyricsLink} target="_blank" rel="noreferrer">Lyrics ↗</a> : null}
+                          </div>
+                          <a className="recommendation-link" href={dailyRecommendations.song.link} target="_blank" rel="noreferrer">Listen on Apple Music ↗</a>
                         </div>
-                        <div className="song-highlight"><p>{dailyRecommendations.song.excerpt}</p></div>
-                        <a className="song-link" href={dailyRecommendations.song.link} target="_blank" rel="noreferrer">Listen on Apple Music ↗</a>
                       </>
-                    ) : <p className="catalog-unavailable">The song catalog could not be reached right now.</p>}
+                    ) : <div className="recommendation-missing"><span className="recommendation-type">Song catalog</span><p>The song catalog could not be reached right now.</p></div>}
                   </article>
-                  <article className="recommendation-row">
+                  <article className="recommendation-card">
                     {dailyRecommendations.movie ? (
                       <>
                         <div className="recommendation-art recommendation-art-movie">
-                          {dailyRecommendations.movie.poster ? <img className="recommendation-cover" src={dailyRecommendations.movie.poster} alt={`${dailyRecommendations.movie.title} poster`} loading="lazy" /> : null}
+                          <img
+                            className="recommendation-cover"
+                            src={dailyRecommendations.movie.poster ? posterSource(dailyRecommendations.movie.poster, dailyRecommendations.movie.title) : posterFallback(dailyRecommendations.movie.title)}
+                            alt={`${dailyRecommendations.movie.title} poster`}
+                            loading="lazy"
+                            onError={(event) => {
+                              if (!event.currentTarget.src.startsWith("data:image/svg+xml")) {
+                                event.currentTarget.src = posterFallback(dailyRecommendations.movie?.title ?? "Tonight's pick");
+                              }
+                            }}
+                          />
                           <span>Tonight’s movie</span>
                         </div>
                         <div className="recommendation-details">
-                          <span className="recommendation-type">Movie · TMDB</span>
+                          <span className="recommendation-type">Movie</span>
                           <div className="recommendation-copy">
-                            <h3>{dailyRecommendations.movie.title} <span>({dailyRecommendations.movie.year})</span></h3>
+                            <h3>{dailyRecommendations.movie.title} {dailyRecommendations.movie.year > 0 ? <span>({dailyRecommendations.movie.year})</span> : null}</h3>
                             <p>{dailyRecommendations.movie.note}</p>
                           </div>
-                          <a className="recommendation-link" href={dailyRecommendations.movie.link} target="_blank" rel="noreferrer">Movie details ↗</a>
+                          <a className="recommendation-link" href={dailyRecommendations.movie.link} target="_blank" rel="noreferrer">View movie details ↗</a>
                         </div>
                       </>
                     ) : (
                       <div className="recommendation-missing">
                         <span className="recommendation-type">Movie catalog</span>
-                        <p>Add a free <code>TMDB_API_KEY</code> to enable daily movie picks.</p>
-                        <a href="https://developer.themoviedb.org/docs/getting-started" target="_blank" rel="noreferrer">Get a TMDB API key ↗</a>
+                        <p>Apple returned no movie picks right now. Please try again later.</p>
                       </div>
                     )}
                   </article>
-                  <article className="recommendation-row">
+                  <article className="recommendation-card">
                     {dailyRecommendations.series ? (
                       <>
                         <div className="recommendation-art recommendation-art-series">
-                          {dailyRecommendations.series.poster ? <img className="recommendation-cover" src={dailyRecommendations.series.poster} alt={`${dailyRecommendations.series.title} poster`} loading="lazy" /> : null}
+                          {dailyRecommendations.series.poster ? <img className="recommendation-cover" src={posterSource(dailyRecommendations.series.poster, dailyRecommendations.series.title)} alt={`${dailyRecommendations.series.title} poster`} loading="lazy" /> : null}
                           <span>Our next series</span>
                         </div>
                         <div className="recommendation-details">
-                          <span className="recommendation-type">Rom-com series · TVmaze</span>
+                          <span className="recommendation-type">Series</span>
                           <div className="recommendation-copy">
                             <h3>{dailyRecommendations.series.title} {dailyRecommendations.series.years ? <span>({dailyRecommendations.series.years})</span> : null}</h3>
                             <p>{dailyRecommendations.series.note}</p>
@@ -654,13 +668,6 @@ export default function HomePage() {
                       </div>
                     )}
                   </article>
-                </div>
-                <div className="recommendation-attribution">
-                  <a href="https://www.themoviedb.org/" target="_blank" rel="noreferrer" aria-label="The Movie Database">
-                    <img src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg" alt="TMDB" />
-                  </a>
-                  <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
-                  <p>TV series data by <a href="https://www.tvmaze.com/" target="_blank" rel="noreferrer">TVmaze</a>. Song catalog via Apple Search API.</p>
                 </div>
                 </>
               ) : (
@@ -723,55 +730,40 @@ export default function HomePage() {
             <h1 className="page-title">Let's see who wins.</h1>
             <p className="page-subtitle">Friendly competition. Absolutely no scorekeeping.</p>
 
-            {gameLoading ? <LoadingMessage>Gathering fresh questions for your next game…</LoadingMessage> : (
+            {gameLoading ? <LoadingMessage>Gathering today’s questions…</LoadingMessage> : (
             <>
-            {gameFallback ? <p className="game-fallback" role="status">Fresh game prompts could not be fetched, so these built-in questions are ready to play.</p> : null}
+            {gameError ? <p className="game-fallback" role="status">Daily questions couldn’t be reached. Please try again later.</p> : null}
             <div className="game-grid">
-              <div className="card game-card">
+              {question ? <div className="card game-card">
                 <span className="tag">Would You Rather</span>
                 <h3>Pick a small dilemma.</h3>
                 <div className="choice-row">
-                  {choiceButton("Would You Rather", question, optionA)}
-                  {choiceButton("Would You Rather", question, optionB)}
+                  {choiceButton("Would You Rather", optionA)}
+                  {choiceButton("Would You Rather", optionB)}
                 </div>
                 {selectedChoices["Would You Rather"] ? <p className="game-feedback">A fine choice. We can discuss the merits later.</p> : null}
-                <button className="btn secondary game-next" onClick={() => { setRatherIndex((value) => value + 1); setSelectedChoices((previous) => ({ ...previous, "Would You Rather": "" })); setGameStatus(""); }}>Next question</button>
-              </div>
+              </div> : null}
 
-              <div className="card game-card">
+              {likelyPrompt ? <div className="card game-card">
                 <span className="tag">Who’s More Likely?</span>
                 <h3>{likelyPrompt}</h3>
                 <div className="choice-row">
-                  {choiceButton("Who’s More Likely", likelyPrompt, "You")}
-                  {choiceButton("Who’s More Likely", likelyPrompt, "Me")}
+                  {choiceButton("Who’s More Likely", "You")}
+                  {choiceButton("Who’s More Likely", "Me")}
                 </div>
                 {selectedChoices["Who’s More Likely"] ? <p className="game-feedback">We'll hear the other side on the next call.</p> : null}
-                <button className="btn secondary game-next" onClick={() => { setLikelyIndex((value) => value + 1); setSelectedChoices((previous) => ({ ...previous, "Who’s More Likely": "" })); setGameStatus(""); }}>Next question</button>
-              </div>
+              </div> : null}
 
-              <div className="card game-card">
-                <span className="tag">Truth or Dare</span>
+              {truthPrompt ? <div className="card game-card">
+                <span className="tag">Truth</span>
+                <h3>{truthPrompt}</h3>
+              </div> : null}
+
+              {darePrompt ? <div className="card game-card">
+                <span className="tag">Dare</span>
                 <h3>{darePrompt}</h3>
-                <div className="choice-row">
-                  {choiceButton("Truth or Dare", darePrompt, "Truth")}
-                  {choiceButton("Truth or Dare", darePrompt, "Dare")}
-                </div>
-                {selectedChoices["Truth or Dare"] ? <p className="game-feedback">{selectedChoices["Truth or Dare"] === "Dare" ? "Dare it is. I'll be waiting for the report." : "A thoughtful answer. I knew you had one."}</p> : null}
-                <button className="btn secondary game-next" onClick={() => { setDareIndex((value) => value + 1); setSelectedChoices((previous) => ({ ...previous, "Truth or Dare": "" })); setGameStatus(""); }}>Next question</button>
-              </div>
-
-              <div className="card game-card">
-                <span className="tag">How Well Do You Know Me?</span>
-                <h3>{knowPrompt}</h3>
-                <div className="choice-row">
-                  {choiceButton("How Well Do You Know Me", knowPrompt, "Answered")}
-                  {choiceButton("How Well Do You Know Me", knowPrompt, "Guessed")}
-                </div>
-                {selectedChoices["How Well Do You Know Me"] ? <p className="game-feedback">{selectedChoices["How Well Do You Know Me"] === "Guessed" ? "A brave guess. I respect it." : "Look at you, knowing things."}</p> : null}
-                <button className="btn secondary game-next" onClick={() => { setKnowIndex((value) => value + 1); setSelectedChoices((previous) => ({ ...previous, "How Well Do You Know Me": "" })); setGameStatus(""); }}>Next question</button>
-              </div>
+              </div> : null}
             </div>
-            {gameStatus ? <div className="status-pill" style={{ marginTop: 16 }}>{gameStatus}</div> : null}
             </>
             )}
           </section>
