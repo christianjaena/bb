@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="56" fill="#f8f3ee"/>
+  <g transform="translate(20 48)">
+    <g transform="scale(.7)">
+      <path d="M128 64c-34-34-92-12-92 41 0 55 57 93 92 119 35-26 92-64 92-119 0-53-58-75-92-41Z" fill="#7397bd"/>
+    </g>
+  </g>
+  <g transform="translate(62 48)">
+    <g transform="scale(.7)">
+      <path d="M128 64c-34-34-92-12-92 41 0 55 57 93 92 119 35-26 92-64 92-119 0-53-58-75-92-41Z" fill="#e8a666"/>
+    </g>
+  </g>
+</svg>
