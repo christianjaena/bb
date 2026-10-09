@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 export const dynamic = "force-dynamic";
 
@@ -71,7 +73,7 @@ type AppleTrack = {
   collectionName?: string;
   trackTimeMillis?: number;
   artworkUrl100?: string;
-  trackViewUrl: string;
+  trackViewUrl?: string;
 };
 
 type MoviePick = {
@@ -81,6 +83,8 @@ type MoviePick = {
   note: string;
   link: string;
   source: string;
+  rating?: number;
+  ratingCount?: number;
 };
 
 type SeriesPick = {
@@ -89,6 +93,7 @@ type SeriesPick = {
   poster: string;
   note: string;
   link: string;
+  rating?: number;
 };
 
 function dayNumber(date: string) {
@@ -141,7 +146,7 @@ async function fetchLyricsHighlight(track: AppleTrack) {
     if (!firstLine) return null;
 
     return {
-      highlight: firstLine.slice(0, 90).trimEnd(),
+      highlight: firstLine.split(/\s+/).slice(0, 10).join(" "),
       link: `https://lrclib.net/search/${encodeURIComponent(`${track.trackName} ${track.artistName}`)}`,
     };
   } catch {
@@ -188,36 +193,53 @@ function createPosterArtwork(title: string) {
 
 async function fetchSong(day: number): Promise<SongPick | null> {
   try {
-    const params = new URLSearchParams({ term: "romantic love", entity: "song", limit: "50", country: "ph", explicit: "No" });
-    const response = await fetch(`https://itunes.apple.com/search?${params}`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) return null;
-    const data: unknown = await response.json();
-    const results = (data as { results?: unknown } | null)?.results;
-    const tracks: AppleTrack[] = Array.isArray(results)
-      ? (results as unknown[]).filter((track): track is AppleTrack => Boolean(
-          track && typeof track === "object" &&
-          typeof (track as AppleTrack).trackName === "string" &&
-          typeof (track as AppleTrack).artistName === "string" &&
-          typeof (track as AppleTrack).trackViewUrl === "string",
-        ))
-      : [];
+    const playlistPath = path.join(process.cwd(), "public", "playlist.txt");
+    const playlistText = await readFile(playlistPath, "utf8");
+    const tracks = [...new Map(playlistText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const separator = line.indexOf(" - ");
+        if (separator < 1 || separator >= line.length - 3) return null;
+        return { artistName: line.slice(0, separator).trim(), trackName: line.slice(separator + 3).trim() };
+      })
+      .filter((track): track is { artistName: string; trackName: string } => Boolean(track?.artistName && track.trackName))
+      .map((track) => [`${track.artistName}\u0000${track.trackName}`.toLocaleLowerCase(), track] as const))].map(([, track]) => track);
     const track = chooseOfDay(tracks, day);
     if (!track) return null;
-    const album = typeof track.collectionName === "string" ? track.collectionName : "";
-    const lyrics = await fetchLyricsHighlight(track);
+    const searchParams = new URLSearchParams({
+      term: `${track.artistName} ${track.trackName}`,
+      entity: "song",
+      limit: "10",
+      country: "ph",
+      explicit: "No",
+    });
+    const catalogResponse = await fetch(`https://itunes.apple.com/search?${searchParams}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(8_000),
+    }).catch(() => null);
+    const catalogData = catalogResponse?.ok ? await catalogResponse.json().catch(() => null) : null;
+    const catalogTracks: AppleTrack[] = Array.isArray(catalogData?.results)
+      ? catalogData.results.filter((item: any) => typeof item?.trackName === "string" && typeof item?.artistName === "string")
+      : [];
+    const normalize = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const catalogTrack = catalogTracks.find((item) =>
+      normalize(item.trackName) === normalize(track.trackName) && normalize(item.artistName) === normalize(track.artistName),
+    ) ?? catalogTracks[0];
+    const lyricTrack: AppleTrack = catalogTrack ?? { trackName: track.trackName, artistName: track.artistName };
+    const lyrics = await fetchLyricsHighlight(lyricTrack);
+    const query = new URLSearchParams({ q: `${track.trackName} ${track.artistName}` });
     return {
       title: track.trackName,
       artist: track.artistName,
-      album,
-      cover: typeof track.artworkUrl100 === "string" ? track.artworkUrl100.replace("100x100", "342x342") : "",
+      album: catalogTrack?.collectionName ?? "",
+      cover: catalogTrack?.artworkUrl100?.replace("100x100", "600x600") ?? "",
       previewUrl: "",
-      link: track.trackViewUrl,
-      excerpt: album ? `From the album ${album}.` : `A daily pick from the Apple music catalog.`,
+      link: `https://music.youtube.com/search?${query}`,
+      excerpt: "A daily pick from your playlist.",
       lyricHighlight: lyrics?.highlight,
-      lyricsLink: lyrics?.link,
+      lyricsLink: lyrics?.link ?? `https://lrclib.net/search/${encodeURIComponent(`${track.trackName} ${track.artistName}`)}`,
     };
   } catch {
     return null;
@@ -226,14 +248,14 @@ async function fetchSong(day: number): Promise<SongPick | null> {
 
 async function fetchMovie(day: number): Promise<MoviePick | null> {
   const searches = [
-    { country: "ph", term: "romantic comedy" },
-    { country: "ph", term: "romance" },
-    { country: "us", term: "romantic comedy" },
-    { country: "us", term: "romance" },
+    { country: "ph", term: "action movie" },
+    { country: "ph", term: "drama movie" },
+    { country: "ph", term: "science fiction movie" },
+    { country: "ph", term: "animation movie" },
+    { country: "ph", term: "thriller movie" },
   ];
 
-  const [searchResults, sampleMovies] = await Promise.all([
-    Promise.all(searches.map(async (search) => {
+  const searchResults = await Promise.all(searches.map(async (search) => {
       try {
         const params = new URLSearchParams({
           term: search.term,
@@ -253,23 +275,18 @@ async function fetchMovie(day: number): Promise<MoviePick | null> {
         }
         const data = await response.json();
         return Array.isArray(data?.results)
-          ? data.results.filter((movie: any) => typeof movie?.trackName === "string" && typeof movie?.trackViewUrl === "string")
+          ? data.results.filter((movie: any) =>
+              typeof movie?.trackName === "string" &&
+              typeof movie?.trackViewUrl === "string" &&
+              typeof movie?.averageUserRating === "number" && movie.averageUserRating >= 4.2 &&
+              typeof movie?.userRatingCount === "number" && movie.userRatingCount >= 500,
+            )
           : [];
       } catch (error) {
         console.warn(`[Daily recommendations] Apple movie search (${search.country}/${search.term}) failed.`, error);
         return [];
       }
-    })),
-    fetch("https://api.sampleapis.com/movies/comedy", {
-      cache: "no-store",
-      signal: AbortSignal.timeout(8_000),
-    })
-      .then(async (response) => response.ok ? await response.json() : [])
-      .catch((error) => {
-        console.warn("[Daily recommendations] SampleAPIs movie catalog failed.", error);
-        return [];
-      }),
-  ]);
+    }));
 
   const movies = [...new Map(searchResults.flat().map((movie: any) => [movie.trackViewUrl, movie])).values()];
   const movie = chooseOfDay(movies, day);
@@ -284,36 +301,22 @@ async function fetchMovie(day: number): Promise<MoviePick | null> {
       note: cleanSummary(movie.longDescription || movie.shortDescription) || `A movie pick from the Apple catalog${movie.primaryGenreName ? ` in ${movie.primaryGenreName.toLowerCase()}` : ""}.`,
       link: movie.trackViewUrl,
       source: "Apple catalog",
-    };
-  }
-
-  const sampleList = Array.isArray(sampleMovies)
-    ? sampleMovies.filter((item: any) => item && typeof item.title === "string")
-    : [];
-  const sampleMovie = chooseOfDay(sampleList, day);
-  if (sampleMovie) {
-    const yearValue = sampleMovie.year ?? sampleMovie.releaseYear ?? sampleMovie.releaseDate;
-    const parsedYear = typeof yearValue === "string" ? Number(yearValue.slice(0, 4)) : Number(yearValue);
-    const imdbId = typeof sampleMovie.imdbId === "string" ? sampleMovie.imdbId : "";
-    const poster = [sampleMovie.posterURL, sampleMovie.posterUrl, sampleMovie.poster_url, sampleMovie.poster, sampleMovie.image]
-      .find((value: unknown) => typeof value === "string" && value.startsWith("http")) as string | undefined;
-    return {
-      title: sampleMovie.title,
-      year: Number.isInteger(parsedYear) ? parsedYear : 0,
-      poster: poster?.replace(/^http:/, "https:") || await fetchWikipediaPoster(sampleMovie.title) || createPosterArtwork(sampleMovie.title),
-      note: cleanSummary(sampleMovie.synopsis || sampleMovie.description || sampleMovie.plot) || "A daily comedy pick from the public movie catalog.",
-      link: imdbId ? `https://www.imdb.com/title/${imdbId}/` : `https://www.imdb.com/find/?q=${encodeURIComponent(sampleMovie.title)}`,
-      source: "SampleAPIs",
+      rating: movie.averageUserRating,
+      ratingCount: movie.userRatingCount,
     };
   }
 
   const offlineMovies: MoviePick[] = [
-    { title: "Set It Up", year: 2018, poster: "", note: "A bright, easy watch with clever schemes and lovely chemistry.", link: "https://itunes.apple.com/search?term=Set%20It%20Up&entity=movie&country=us", source: "Our daily picks" },
-    { title: "10 Things I Hate About You", year: 1999, poster: "", note: "A funny, warm high-school romance with plenty of heart.", link: "https://itunes.apple.com/search?term=10%20Things%20I%20Hate%20About%20You&entity=movie&country=us", source: "Our daily picks" },
-    { title: "The Big Sick", year: 2017, poster: "", note: "A heartfelt romantic comedy about family, timing, and showing up.", link: "https://itunes.apple.com/search?term=The%20Big%20Sick&entity=movie&country=us", source: "Our daily picks" },
-    { title: "While You Were Sleeping", year: 1995, poster: "", note: "A cozy romantic comedy built around an unexpected connection.", link: "https://itunes.apple.com/search?term=While%20You%20Were%20Sleeping&entity=movie&country=us", source: "Our daily picks" },
-    { title: "Crazy Rich Asians", year: 2018, poster: "", note: "A colorful romance about love, family, and finding your place.", link: "https://itunes.apple.com/search?term=Crazy%20Rich%20Asians&entity=movie&country=us", source: "Our daily picks" },
-    { title: "The Holiday", year: 2006, poster: "", note: "A comforting story about fresh starts and unexpected love.", link: "https://itunes.apple.com/search?term=The%20Holiday&entity=movie&country=us", source: "Our daily picks" },
+    { title: "The Shawshank Redemption", year: 1994, poster: "", note: "A moving story of friendship and hope inside a prison.", link: "https://www.imdb.com/find/?q=The%20Shawshank%20Redemption", source: "Curated picks" },
+    { title: "The Dark Knight", year: 2008, poster: "", note: "A gripping crime thriller that raises the stakes for Gotham and Batman.", link: "https://www.imdb.com/find/?q=The%20Dark%20Knight", source: "Curated picks" },
+    { title: "The Lord of the Rings: The Fellowship of the Ring", year: 2001, poster: "", note: "An acclaimed fantasy adventure begins an epic journey across Middle-earth.", link: "https://www.imdb.com/find/?q=The%20Lord%20of%20the%20Rings%20The%20Fellowship%20of%20the%20Ring", source: "Curated picks" },
+    { title: "Inception", year: 2010, poster: "", note: "A clever, high-stakes science fiction heist inside a world of dreams.", link: "https://www.imdb.com/find/?q=Inception", source: "Curated picks" },
+    { title: "Interstellar", year: 2014, poster: "", note: "A sweeping space adventure about exploration, family, and time.", link: "https://www.imdb.com/find/?q=Interstellar", source: "Curated picks" },
+    { title: "Spirited Away", year: 2001, poster: "", note: "A richly imagined animated fantasy from Studio Ghibli.", link: "https://www.imdb.com/find/?q=Spirited%20Away", source: "Curated picks" },
+    { title: "Coco", year: 2017, poster: "", note: "A colorful Pixar adventure about music, family, and remembrance.", link: "https://www.imdb.com/find/?q=Coco%202017", source: "Curated picks" },
+    { title: "Parasite", year: 2019, poster: "", note: "A tense, darkly funny thriller about two families and a widening divide.", link: "https://www.imdb.com/find/?q=Parasite%202019", source: "Curated picks" },
+    { title: "The Grand Budapest Hotel", year: 2014, poster: "", note: "A stylish comedy adventure full of eccentric characters and capers.", link: "https://www.imdb.com/find/?q=The%20Grand%20Budapest%20Hotel", source: "Curated picks" },
+    { title: "Spider-Man: Into the Spider-Verse", year: 2018, poster: "", note: "An inventive, acclaimed animated superhero adventure.", link: "https://www.imdb.com/find/?q=Spider-Man%20Into%20the%20Spider-Verse", source: "Curated picks" },
   ];
   const offlineMovie = chooseOfDay(offlineMovies, day);
   if (!offlineMovie) return null;
@@ -321,25 +324,37 @@ async function fetchMovie(day: number): Promise<MoviePick | null> {
 
 }
 
+const notableSeries: SeriesPick[] = [
+  { title: "Breaking Bad", years: "2008-2013", poster: "", note: "A chemistry teacher's transformation into a drug kingpin becomes a gripping crime drama.", link: "https://www.tvmaze.com/search?q=Breaking%20Bad" },
+  { title: "Sherlock", years: "2010-2017", poster: "", note: "A fast, clever modern take on the famous detective stories.", link: "https://www.tvmaze.com/search?q=Sherlock" },
+  { title: "The Office", years: "2005-2013", poster: "", note: "An acclaimed workplace comedy with a warm ensemble cast.", link: "https://www.tvmaze.com/search?q=The%20Office" },
+  { title: "Chernobyl", years: "2019", poster: "", note: "A widely praised historical drama about the 1986 nuclear disaster.", link: "https://www.tvmaze.com/search?q=Chernobyl" },
+  { title: "Stranger Things", years: "2016-2025", poster: "", note: "A hugely popular science fiction mystery with a close-knit group of friends.", link: "https://www.tvmaze.com/search?q=Stranger%20Things" },
+  { title: "Game of Thrones", years: "2011-2019", poster: "", note: "A globally popular fantasy drama of rival families and shifting power.", link: "https://www.tvmaze.com/search?q=Game%20of%20Thrones" },
+  { title: "The Queen's Gambit", years: "2020", poster: "", note: "A stylish, acclaimed drama about a gifted chess player finding her way.", link: "https://www.tvmaze.com/search?q=The%20Queen%27s%20Gambit" },
+  { title: "Friends", years: "1994-2004", poster: "", note: "A landmark, widely loved sitcom about six friends in New York.", link: "https://www.tvmaze.com/search?q=Friends" },
+];
+
+async function fetchCuratedSeries(day: number): Promise<SeriesPick | null> {
+  const pick = chooseOfDay(notableSeries, day);
+  return pick ? { ...pick, poster: await fetchWikipediaPoster(pick.title) } : null;
+}
+
 async function fetchSeries(day: number): Promise<SeriesPick | null> {
   try {
-    const response = await fetch(`https://api.tvmaze.com/search/shows?q=romance`, {
+    const response = await fetch(`https://api.tvmaze.com/shows?page=${day % 100}`, {
       cache: "no-store",
       headers: { "User-Agent": "OurLittleWorld/1.0 (daily recommendations)" },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return fetchCuratedSeries(day);
     const data = await response.json();
     const shows = Array.isArray(data)
       ? data
-          .map((result: any) => result?.show)
-          .filter((show: any) => {
-            const genres = Array.isArray(show?.genres) ? show.genres.map((genre: string) => genre.toLowerCase()) : [];
-            return typeof show?.name === "string" && (genres.includes("comedy") || genres.includes("romance"));
-          })
+          .filter((show: any) => typeof show?.name === "string" && typeof show?.rating?.average === "number" && show.rating.average >= 7.5 && typeof show?.weight === "number" && show.weight >= 40)
       : [];
     const show = chooseOfDay(shows, day);
-    if (!show) return null;
+    if (!show) return fetchCuratedSeries(day);
     const startYear = typeof show.premiered === "string" ? show.premiered.slice(0, 4) : "";
     const endYear = typeof show.ended === "string" ? show.ended.slice(0, 4) : "";
     const years = startYear ? `${startYear}${endYear && endYear !== startYear ? `-${endYear}` : endYear ? "" : "-present"}` : "";
@@ -347,11 +362,12 @@ async function fetchSeries(day: number): Promise<SeriesPick | null> {
       title: show.name,
       years,
       poster: typeof show.image?.medium === "string" ? show.image.medium : "",
-      note: cleanSummary(show.summary) || "A romance or comedy pick from the TVmaze catalog.",
+      note: cleanSummary(show.summary) || (Array.isArray(show.genres) && show.genres.length ? `A ${show.genres.join(", ").toLowerCase()} series.` : "A series pick from the TVmaze catalog."),
       link: typeof show.url === "string" ? show.url : "https://www.tvmaze.com/",
+      rating: show.rating.average,
     };
   } catch {
-    return null;
+    return fetchCuratedSeries(day);
   }
 }
 
@@ -368,7 +384,6 @@ export async function GET(request: Request) {
   const [song, movie, series] = await Promise.all([fetchSong(day), fetchMovie(day), fetchSeries(day + 2)]);
   const warnings: string[] = [];
   if (!song) warnings.push("Song catalog could not be reached right now.");
-  if (movie?.source === "Our daily picks") warnings.push("Movie catalogs were unavailable; showing a rotating pick instead.");
   if (!series) warnings.push("TVmaze could not provide a series pick right now.");
 
   if (!song && !movie && !series) {
@@ -379,7 +394,7 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.json(
-    { song, movie, series, warnings, source: "public-catalogs", date },
+    { song, movie, series, warnings, source: "playlist-and-public-catalogs", date },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

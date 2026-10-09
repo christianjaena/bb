@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { generateGeminiText } from "@/lib/gemini";
 
 export const dynamic = "force-dynamic";
 
@@ -11,18 +10,42 @@ const FALLBACK_CAPTIONS = [
   "Next call: you, me, and an unnecessary amount of snacks.",
 ];
 
-export async function GET() {
-  const generated = await generateGeminiText(
-    "Write one short photo caption for a private long-distance couple's home page. It should feel personal, light, gently flirty, and natural, with a little wit. No clichés, no product language, no emojis, no quote from a song, and no more than 12 words. Return just the caption.",
-  );
-  const cleaned = generated?.replace(/[\r\n]+/g, " ").replace(/^['\"]|['\"]$/g, "").trim();
-  const valid = Boolean(cleaned && cleaned.length <= 90 && cleaned.split(/\s+/).length <= 12);
-  const caption = valid
-    ? cleaned
-    : FALLBACK_CAPTIONS[Math.floor(Math.random() * FALLBACK_CAPTIONS.length)];
+function dateForToday() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila" }).format(new Date());
+}
 
-  return NextResponse.json(
-    { caption, source: valid ? "ai" : "local" },
-    { headers: { "Cache-Control": "no-store" } },
-  );
+function pickOfDay<T>(items: T[], date: string) {
+  const day = Math.floor(Date.parse(`${date}T00:00:00Z`) / 86_400_000);
+  return items[((day % items.length) + items.length) % items.length];
+}
+
+export async function GET(request: Request) {
+  const requestedDate = new URL(request.url).searchParams.get("date") ?? "";
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) ? requestedDate : dateForToday();
+
+  try {
+    const response = await fetch("https://dumbapis.com/compliment", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(8_000),
+    });
+    console.info(`[Daily caption] DumbAPIs /compliment request: HTTP ${response.status}.`);
+    if (!response.ok) throw new Error(`http_${response.status}`);
+
+    const result = await response.json();
+    if (typeof result?.compliment !== "string" || !result.compliment.trim()) {
+      throw new Error("empty_or_invalid_data");
+    }
+
+    return NextResponse.json(
+      { caption: result.compliment.trim(), author: "", source: "dumbapis", date },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  } catch (error) {
+    const debugReason = error instanceof Error ? error.message : String(error);
+    console.warn(`[Daily caption] DumbAPIs /compliment unavailable (${debugReason}); using a local caption.`);
+    return NextResponse.json(
+      { caption: pickOfDay(FALLBACK_CAPTIONS, date), author: "", source: "local", date, debugReason },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
 }

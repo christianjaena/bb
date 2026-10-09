@@ -4,11 +4,26 @@
 import { useEffect, useState } from "react";
 import { RELATIONSHIP_CONFIG } from "@/lib/data";
 import { createShareableUrl } from "@/lib/share";
+import { OPEN_WHEN_PROMPTS, type OpenWhenFeeling } from "@/lib/open-when-prompts";
+import { generateOpenWhenMessage } from "@/lib/open-when-webllm";
 
 const navItems = [
   ["us", "❤️", "Us"],
   ["letters", "💌", "Letters"],
+  ["open-when", "✨", "Open When"],
   ["play", "🎲", "Play"],
+] as const;
+
+const feelings = [
+  { id: "sad", title: "I’m sad", emoji: "🌧️", description: "Read a gentle, reassuring note for this moment." },
+  { id: "lonely", title: "I feel lonely", emoji: "🫶", description: "A reminder that you’re cared for, even from far away." },
+  { id: "miss-you", title: "I miss you", emoji: "💌", description: "For when the distance feels especially big." },
+  { id: "anxious", title: "I’m anxious", emoji: "🫧", description: "A calm word when your thoughts are racing." },
+  { id: "overwhelmed", title: "I feel overwhelmed", emoji: "🍃", description: "A little permission to pause and take one step." },
+  { id: "bad-day", title: "I had a rough day", emoji: "🌿", description: "A soft place to land after a hard day." },
+  { id: "cant-sleep", title: "I can’t sleep", emoji: "🌙", description: "For a long night when you need calm." },
+  { id: "need-love", title: "I need reassurance", emoji: "💛", description: "A reminder of how loved you are." },
+  { id: "good-news", title: "I have good news", emoji: "🎉", description: "A note that celebrates your happy moment." },
 ] as const;
 
 type Tab = (typeof navItems)[number][0];
@@ -35,10 +50,18 @@ type DailySong = {
 
 type DailyRecommendations = {
   song: DailySong | null;
-  movie: { title: string; year: number; poster: string; note: string; link: string; source?: string } | null;
-  series: { title: string; years: string; poster: string; note: string; link: string } | null;
+  movie: { title: string; year: number; poster: string; note: string; link: string; source?: string; rating?: number; ratingCount?: number } | null;
+  series: { title: string; years: string; poster: string; note: string; link: string; rating?: number } | null;
   warnings?: string[];
 };
+
+type DailyCaptionResponse = {
+  caption?: unknown;
+  source?: string;
+  debugReason?: string;
+};
+
+type DailyJokeResponse = { joke?: unknown; date?: unknown; source?: unknown };
 
 function hasDailyPicks(value: DailyRecommendations | null | undefined): value is DailyRecommendations {
   return Boolean(value && (value.song?.title || value.movie?.title || value.series?.title));
@@ -187,6 +210,8 @@ function relationshipDuration(startDate: string, now: Date) {
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>("us");
   const [dailyCaption, setDailyCaption] = useState("");
+  const [dailyJoke, setDailyJoke] = useState("");
+  const [dailyJokeUnavailable, setDailyJokeUnavailable] = useState(false);
   const [dailyRecommendations, setDailyRecommendations] = useState<DailyRecommendations | null>(null);
   const [recommendationStatus, setRecommendationStatus] = useState("Creating today's recommendations…");
   const [recommendationsLoading, setRecommendationsLoading] = useState(true);
@@ -205,6 +230,12 @@ export default function HomePage() {
   const [letterUrl, setLetterUrl] = useState("");
   const [letterStatus, setLetterStatus] = useState("");
   const [savingLetter, setSavingLetter] = useState(false);
+  const [selectedFeeling, setSelectedFeeling] = useState("");
+  const [feelingMessage, setFeelingMessage] = useState("");
+  const [feelingMessageSource, setFeelingMessageSource] = useState("");
+  const [feelingMessageLoading, setFeelingMessageLoading] = useState(false);
+  const [feelingMessageNotice, setFeelingMessageNotice] = useState("");
+  const [feelingModelProgress, setFeelingModelProgress] = useState<{ text: string; progress: number | null } | null>(null);
   const [selectedChoices, setSelectedChoices] = useState<Record<string, string>>({});
   const kmApart = distanceKm();
   const hoursAway = Math.abs(timezoneOffsetMinutes("Asia/Manila", clockNow) - timezoneOffsetMinutes("Pacific/Auckland", clockNow)) / 60;
@@ -216,7 +247,7 @@ export default function HomePage() {
     let loadedRecommendationDate = todayKey();
 
     const loadRecommendations = async (date: string) => {
-      const cacheKey = `daily-public-recommendations-v8-${date}`;
+      const cacheKey = `daily-public-recommendations-v12-${date}`;
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
@@ -269,7 +300,7 @@ export default function HomePage() {
         let previousDate = "";
         try {
           for (const key of Object.keys(localStorage)) {
-            const cachedDate = key.startsWith("daily-public-recommendations-v8-") ? key.slice("daily-public-recommendations-v8-".length) : "";
+            const cachedDate = key.startsWith("daily-public-recommendations-v12-") ? key.slice("daily-public-recommendations-v12-".length) : "";
             if (cachedDate && cachedDate < date && cachedDate > previousDate) {
               const cached = JSON.parse(localStorage.getItem(key) || "null") as DailyRecommendations | null;
               if (hasDailyPicks(cached)) {
@@ -304,30 +335,76 @@ export default function HomePage() {
     }, 60_000);
 
     void (async () => {
-      const cacheKey = `daily-caption-${todayKey()}`;
+      const captionDate = todayKey();
+      const cacheKey = `daily-caption-v7-${captionDate}`;
       try {
         const cachedCaption = localStorage.getItem(cacheKey);
         if (cachedCaption) {
-          setDailyCaption(cachedCaption);
-          return;
+          const parsedCaption = JSON.parse(cachedCaption);
+          if (typeof parsedCaption?.caption === "string") {
+            setDailyCaption(parsedCaption.caption);
+            return;
+          }
         }
       } catch {
         // Continue to the caption endpoint when local storage is unavailable.
       }
 
       try {
-        const response = await fetch("/api/daily-caption", { cache: "no-store" });
-        if (!response.ok) throw new Error("Caption request failed");
-        const data = await response.json();
+        const response = await fetch(`/api/daily-caption?date=${encodeURIComponent(captionDate)}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`Caption request failed with HTTP ${response.status}`);
+        const data = await response.json() as DailyCaptionResponse;
         const caption = typeof data.caption === "string" ? data.caption : "Saving you a seat for our next call.";
+        const source = typeof data.source === "string" ? data.source : "";
+        if (data.source === "local") console.warn(`[Daily caption] App route returned the local fallback (${data.debugReason ?? "no debug reason"}).`);
+        else console.info(`[Daily caption] Loaded compliment from ${data.source ?? "unknown source"}.`);
         setDailyCaption(caption);
-        try {
-          localStorage.setItem(cacheKey, caption);
-        } catch {
-          // Keep the caption in memory for this visit.
+        if (source === "dumbapis") {
+          try {
+            localStorage.setItem(cacheKey, JSON.stringify({ caption }));
+          } catch {
+            // Keep the caption in memory for this visit.
+          }
+        }
+      } catch (error) {
+        console.error("[Daily caption] Could not fetch /api/daily-caption. Check the browser Network tab and the Next.js server logs.", error);
+        setDailyCaption("Saving you a seat for our next call.");
+      }
+    })();
+
+    void (async () => {
+      // DumbAPIs' daily joke changes at midnight UTC, so use its date for the browser cache key.
+      const utcDate = new Date().toISOString().slice(0, 10);
+      const cacheKey = `daily-joke-v1-${utcDate}`;
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (typeof parsed?.joke === "string" && parsed.joke.trim()) {
+            setDailyJoke(parsed.joke);
+            return;
+          }
         }
       } catch {
-        setDailyCaption("Saving you a seat for our next call.");
+        // Load a fresh joke if the cache cannot be read.
+      }
+
+      try {
+        const response = await fetch("/api/daily-joke", { cache: "no-store" });
+        if (!response.ok) throw new Error(`Joke request failed with HTTP ${response.status}`);
+        const data = await response.json() as DailyJokeResponse;
+        if (typeof data.joke !== "string" || !data.joke.trim()) throw new Error("No joke was returned");
+        if (!active) return;
+        setDailyJoke(data.joke.trim());
+        try {
+          localStorage.setItem(`daily-joke-v1-${typeof data.date === "string" ? data.date : utcDate}`, JSON.stringify({ joke: data.joke.trim() }));
+        } catch {
+          // Keep the joke in memory for this visit.
+        }
+      } catch (error) {
+        if (!active) return;
+        console.warn("[Daily joke] Could not fetch /api/daily-joke.", error);
+        setDailyJokeUnavailable(true);
       }
     })();
 
@@ -443,6 +520,31 @@ export default function HomePage() {
     }
   };
 
+  const generateFeelingMessage = async (feeling: OpenWhenFeeling) => {
+    if (feelingMessageLoading) return;
+    setSelectedFeeling(feeling);
+    setFeelingMessage("");
+    setFeelingMessageSource("");
+    setFeelingMessageNotice("");
+    setFeelingMessageLoading(true);
+    setFeelingModelProgress({ text: "Starting the on-device model…", progress: 0 });
+    try {
+      const message = await generateOpenWhenMessage(feeling, (report) => {
+        setFeelingModelProgress({ text: report.text, progress: report.progress });
+      });
+      setFeelingMessage(message);
+      setFeelingMessageSource("webllm");
+    } catch (error) {
+      console.warn("[Open When] On-device generation failed; showing the feeling-specific fallback.", error);
+      setFeelingMessage(OPEN_WHEN_PROMPTS[feeling].fallback);
+      setFeelingMessageSource("local");
+      setFeelingMessageNotice("On-device AI isn’t available right now, so here’s a ready-made note for this feeling.");
+    } finally {
+      setFeelingMessageLoading(false);
+      setFeelingModelProgress(null);
+    }
+  };
+
   const copyLetterLink = async () => {
     try {
       await navigator.clipboard.writeText(letterUrl);
@@ -508,9 +610,9 @@ export default function HomePage() {
                     <img className="country-flag" src="https://flagcdn.com/w40/nz.png" alt="New Zealand" width="20" height="15" /> Auckland
                   </div>
                 <h1>
-                  <em>Ellen.</em>
-                  <br />
                   <span className="hero-name-blue">Christian.</span>
+                  <br />
+                  <em>Ellen.</em>
                 </h1>
                 <p>
                   Kamusta. Kia Ora.
@@ -597,7 +699,6 @@ export default function HomePage() {
                               onError={(event) => { event.currentTarget.style.display = "none"; }}
                             />
                           ) : null}
-                          <span>Our song today</span>
                         </div>
                         <div className="recommendation-details">
                           <span className="recommendation-type">Song</span>
@@ -609,7 +710,7 @@ export default function HomePage() {
                             <p>{dailyRecommendations.song.lyricHighlight ? `“${dailyRecommendations.song.lyricHighlight}”` : dailyRecommendations.song.excerpt}</p>
                             {dailyRecommendations.song.lyricsLink ? <a href={dailyRecommendations.song.lyricsLink} target="_blank" rel="noreferrer">Lyrics ↗</a> : null}
                           </div>
-                          <a className="recommendation-link" href={dailyRecommendations.song.link} target="_blank" rel="noreferrer">Listen on Apple Music ↗</a>
+                          <a className="recommendation-link" href={dailyRecommendations.song.link} target="_blank" rel="noreferrer">Find on YouTube ↗</a>
                         </div>
                       </>
                     ) : <div className="recommendation-missing"><span className="recommendation-type">Song catalog</span><p>The song catalog could not be reached right now.</p></div>}
@@ -629,12 +730,12 @@ export default function HomePage() {
                               }
                             }}
                           />
-                          <span>Tonight’s movie</span>
                         </div>
                         <div className="recommendation-details">
                           <span className="recommendation-type">Movie</span>
                           <div className="recommendation-copy">
                             <h3>{dailyRecommendations.movie.title} {dailyRecommendations.movie.year > 0 ? <span>({dailyRecommendations.movie.year})</span> : null}</h3>
+                            {dailyRecommendations.movie.rating && dailyRecommendations.movie.ratingCount ? <p>★ {dailyRecommendations.movie.rating.toFixed(1)}/5 · {dailyRecommendations.movie.ratingCount.toLocaleString()} ratings</p> : null}
                             <p>{dailyRecommendations.movie.note}</p>
                           </div>
                           <a className="recommendation-link" href={dailyRecommendations.movie.link} target="_blank" rel="noreferrer">View movie details ↗</a>
@@ -652,12 +753,12 @@ export default function HomePage() {
                       <>
                         <div className="recommendation-art recommendation-art-series">
                           {dailyRecommendations.series.poster ? <img className="recommendation-cover" src={posterSource(dailyRecommendations.series.poster, dailyRecommendations.series.title)} alt={`${dailyRecommendations.series.title} poster`} loading="lazy" /> : null}
-                          <span>Our next series</span>
                         </div>
                         <div className="recommendation-details">
                           <span className="recommendation-type">Series</span>
                           <div className="recommendation-copy">
                             <h3>{dailyRecommendations.series.title} {dailyRecommendations.series.years ? <span>({dailyRecommendations.series.years})</span> : null}</h3>
+                            {dailyRecommendations.series.rating ? <p>★ {dailyRecommendations.series.rating.toFixed(1)}/10 on TVmaze</p> : null}
                             <p>{dailyRecommendations.series.note}</p>
                           </div>
                           <a className="recommendation-link" href={dailyRecommendations.series.link} target="_blank" rel="noreferrer">Series details ↗</a>
@@ -677,6 +778,16 @@ export default function HomePage() {
                   {recommendationsLoading ? <LoadingMessage>{recommendationStatus}</LoadingMessage> : <p>{recommendationStatus}</p>}
                 </div>
               )}
+            </section>
+
+            <section className="section daily-joke-section" aria-labelledby="daily-joke-title">
+              <div className="recommendation-heading">
+                <h2 id="daily-joke-title">Daily Joke</h2>
+              </div>
+              <div className="card daily-joke-card" aria-live="polite">
+                <span className="daily-joke-emoji" aria-hidden="true">😄</span>
+                {dailyJoke ? <p>{dailyJoke}</p> : dailyJokeUnavailable ? <p>Today’s joke is taking a little longer. Try again later.</p> : <LoadingMessage>Finding today’s joke…</LoadingMessage>}
+              </div>
             </section>
 
             <section className="section">
@@ -711,8 +822,22 @@ export default function HomePage() {
                 <label htmlFor="letter-details">Your letter</label>
                 <textarea id="letter-details" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your own note here…" />
               </div>
-              <button className="btn primary" onClick={() => void createLetter()} disabled={savingLetter}>
-                {savingLetter ? "Making your letter…" : "Create my letter"}
+              <button
+                className="btn primary letter-send-button"
+                type="button"
+                onClick={() => void createLetter()}
+                disabled={savingLetter}
+                aria-label={savingLetter ? "Creating your letter link" : "Create letter and copy its link"}
+                title={savingLetter ? "Creating your letter link" : "Create letter and copy its link"}
+              >
+                {savingLetter ? (
+                  <span className="loading-spinner letter-send-spinner" aria-hidden="true" />
+                ) : (
+                  <svg className="letter-send-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="m22 2-7 20-4-9-9-4Z" />
+                    <path d="M22 2 11 13" />
+                  </svg>
+                )}
               </button>
               {letterStatus ? <p className="letter-status" role="status">{letterStatus}</p> : null}
               {letterUrl ? (
@@ -723,6 +848,61 @@ export default function HomePage() {
               ) : null}
             </div>
 
+          </section>
+        )}
+
+        {tab === "open-when" && (
+          <section className="page open-when-page">
+            <div className="eyebrow">A little note, right when you need it</div>
+            <h1 className="page-title">Open when…</h1>
+            <p className="page-subtitle">Tap how you’re feeling. A message for that moment will appear here.</p>
+
+            <div className="open-when-choices-heading">
+              <h2>What are you feeling?</h2>
+            </div>
+            <div className="open-when-grid" role="group" aria-label="Choose how you’re feeling">
+              {feelings.map((feeling) => (
+                <button
+                  className={`card open-when-card ${selectedFeeling === feeling.id ? "selected" : ""}`}
+                  key={feeling.id}
+                  type="button"
+                  aria-pressed={selectedFeeling === feeling.id}
+                  disabled={feelingMessageLoading}
+                  onClick={() => void generateFeelingMessage(feeling.id)}
+                >
+                  <span className="open-when-emoji" aria-hidden="true">{feeling.emoji}</span>
+                  <span className="open-when-feeling-title">{feeling.title}</span>
+                  <span className="open-when-description">{feeling.description}</span>
+                </button>
+              ))}
+            </div>
+
+            {feelingMessageNotice ? <p className="open-when-fallback-note" role="status">{feelingMessageNotice}</p> : null}
+            {feelingMessageLoading ? (
+              <div className="open-when-loading" role="status" aria-live="polite">
+                <div
+                  className="open-when-progress-track"
+                  role="progressbar"
+                  aria-label="Loading"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  {...(feelingModelProgress?.progress !== null && feelingModelProgress?.progress !== undefined
+                    ? { "aria-valuenow": Math.round(Math.max(0, Math.min(1, feelingModelProgress.progress)) * 100) }
+                    : {})}
+                >
+                  <div
+                    className={`open-when-progress-fill ${feelingModelProgress?.progress === null ? "indeterminate" : ""}`}
+                    style={feelingModelProgress?.progress === null ? undefined : { width: `${Math.round(Math.max(0, Math.min(1, feelingModelProgress?.progress ?? 0)) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            ) : null}
+            {feelingMessage ? (
+              <article className="card open-when-message" aria-live="polite">
+                <span className="open-when-emoji" aria-hidden="true">{feelings.find((feeling) => feeling.id === selectedFeeling)?.emoji ?? "💛"}</span>
+                <p>{feelingMessage}</p>
+              </article>
+            ) : null}
           </section>
         )}
 
