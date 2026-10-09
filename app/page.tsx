@@ -234,7 +234,6 @@ export default function HomePage() {
   const [feelingMessage, setFeelingMessage] = useState("");
   const [feelingMessageSource, setFeelingMessageSource] = useState("");
   const [feelingMessageLoading, setFeelingMessageLoading] = useState(false);
-  const [feelingMessageNotice, setFeelingMessageNotice] = useState("");
   const [feelingModelProgress, setFeelingModelProgress] = useState<{ text: string; progress: number | null } | null>(null);
   const [selectedChoices, setSelectedChoices] = useState<Record<string, string>>({});
   const kmApart = distanceKm();
@@ -525,7 +524,6 @@ export default function HomePage() {
     setSelectedFeeling(feeling);
     setFeelingMessage("");
     setFeelingMessageSource("");
-    setFeelingMessageNotice("");
     setFeelingMessageLoading(true);
     setFeelingModelProgress({ text: "Starting the on-device model…", progress: 0 });
     try {
@@ -538,7 +536,6 @@ export default function HomePage() {
       console.warn("[Open When] On-device generation failed; showing the feeling-specific fallback.", error);
       setFeelingMessage(OPEN_WHEN_PROMPTS[feeling].fallback);
       setFeelingMessageSource("local");
-      setFeelingMessageNotice("On-device AI isn’t available right now, so here’s a ready-made note for this feeling.");
     } finally {
       setFeelingMessageLoading(false);
       setFeelingModelProgress(null);
@@ -637,7 +634,7 @@ export default function HomePage() {
                 <div className="card connection-dashboard">
                   <div className="city-time-grid">
                     <div className="city-time">
-                      <span className="place"><span className="dot" /><span className="time-emoji" aria-label="Manila local time">{timeEmoji(localHour("Asia/Manila", clockNow))}</span> <img className="country-flag" src="https://flagcdn.com/w40/ph.png" alt="Philippines" width="20" height="15" /> Manila</span>
+                      <span className="place"><span className="time-emoji" aria-label="Manila local time">{timeEmoji(localHour("Asia/Manila", clockNow))}</span> <img className="country-flag" src="https://flagcdn.com/w40/ph.png" alt="Philippines" width="20" height="15" /> Manila</span>
                       <strong>{formatTime("Asia/Manila", clockNow)}</strong>
                       <span className="city-daypart">{dayPart(localHour("Asia/Manila", clockNow))}</span>
                       {weather?.manila ? (
@@ -647,7 +644,7 @@ export default function HomePage() {
                       ) : <span className="weather-readout">{weatherUnavailable ? "Weather unavailable" : "Checking the sky…"}</span>}
                     </div>
                     <div className="city-time">
-                      <span className="place"><span className="dot dot-sage" /><span className="time-emoji" aria-label="Auckland local time">{timeEmoji(localHour("Pacific/Auckland", clockNow))}</span> <img className="country-flag" src="https://flagcdn.com/w40/nz.png" alt="New Zealand" width="20" height="15" /> Auckland</span>
+                      <span className="place"><span className="time-emoji" aria-label="Auckland local time">{timeEmoji(localHour("Pacific/Auckland", clockNow))}</span> <img className="country-flag" src="https://flagcdn.com/w40/nz.png" alt="New Zealand" width="20" height="15" /> Auckland</span>
                       <strong>{formatTime("Pacific/Auckland", clockNow)}</strong>
                       <span className="city-daypart">{dayPart(localHour("Pacific/Auckland", clockNow))}</span>
                       {weather?.auckland ? (
@@ -877,7 +874,6 @@ export default function HomePage() {
               ))}
             </div>
 
-            {feelingMessageNotice ? <p className="open-when-fallback-note" role="status">{feelingMessageNotice}</p> : null}
             {feelingMessageLoading ? (
               <div className="open-when-loading" role="status" aria-live="polite">
                 <div
