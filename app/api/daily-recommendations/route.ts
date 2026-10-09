@@ -4,8 +4,8 @@ export const dynamic = "force-dynamic";
 
 const posterHosts = new Set(["m.media-amazon.com", "static.tvmaze.com", "upload.wikimedia.org", "thumb.wikimedia.org"]);
 
-async function proxyPoster(rawUrl: string, title = "", allowFallback = true) {
-  const fallbackToWikipedia = async () => {
+async function proxyPoster(rawUrl: string, title = "", allowFallback = true): Promise<Response> {
+  const fallbackToWikipedia = async (): Promise<Response | null> => {
     if (!allowFallback || !title) return null;
     const wikiPoster = await fetchWikipediaPoster(title);
     return wikiPoster && wikiPoster !== rawUrl ? proxyPoster(wikiPoster, "", false) : null;
@@ -65,6 +65,15 @@ type SongPick = {
   lyricsLink?: string;
 };
 
+type AppleTrack = {
+  trackName: string;
+  artistName: string;
+  collectionName?: string;
+  trackTimeMillis?: number;
+  artworkUrl100?: string;
+  trackViewUrl: string;
+};
+
 type MoviePick = {
   title: string;
   year: number;
@@ -107,7 +116,7 @@ function cleanSummary(value: unknown) {
   return `${summary.slice(0, maxLength).replace(/\s+\S*$/, "").trimEnd()}…`;
 }
 
-async function fetchLyricsHighlight(track: any) {
+async function fetchLyricsHighlight(track: AppleTrack) {
   try {
     const params = new URLSearchParams({
       track_name: track.trackName,
@@ -185,9 +194,15 @@ async function fetchSong(day: number): Promise<SongPick | null> {
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) return null;
-    const data = await response.json();
-    const tracks = Array.isArray(data?.results)
-      ? data.results.filter((track: any) => typeof track?.trackName === "string" && typeof track?.artistName === "string" && typeof track?.trackViewUrl === "string")
+    const data: unknown = await response.json();
+    const results = (data as { results?: unknown } | null)?.results;
+    const tracks: AppleTrack[] = Array.isArray(results)
+      ? (results as unknown[]).filter((track): track is AppleTrack => Boolean(
+          track && typeof track === "object" &&
+          typeof (track as AppleTrack).trackName === "string" &&
+          typeof (track as AppleTrack).artistName === "string" &&
+          typeof (track as AppleTrack).trackViewUrl === "string",
+        ))
       : [];
     const track = chooseOfDay(tracks, day);
     if (!track) return null;

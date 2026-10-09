@@ -24,6 +24,7 @@ type Activity = {
 type DailySong = {
   title: string;
   artist: string;
+  album: string;
   cover: string;
   link: string;
   excerpt: string;
@@ -47,6 +48,7 @@ const OFFLINE_RECOMMENDATIONS: DailyRecommendations = {
   song: {
     title: "Can't Help Falling in Love",
     artist: "Elvis Presley",
+    album: "",
     cover: "",
     link: "https://music.apple.com/us/search?term=Can%27t%20Help%20Falling%20in%20Love%20Elvis%20Presley",
     excerpt: "A soft classic for your next kitchen slow dance.",
