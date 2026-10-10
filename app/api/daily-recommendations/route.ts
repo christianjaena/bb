@@ -20,7 +20,7 @@ async function proxyPoster(rawUrl: string, title = "", allowFallback = true): Pr
     return await fallbackToWikipedia() ?? NextResponse.json({ error: "Invalid poster URL." }, { status: 400 });
   }
 
-  const allowedHost = posterHosts.has(imageUrl.hostname) || /^is\d+-ssl\.mzstatic\.com$/.test(imageUrl.hostname);
+  const allowedHost = posterHosts.has(imageUrl.hostname) || /^is\d+-ssl\.mzstatic\.com$/.test(imageUrl.hostname) || imageUrl.hostname.endsWith(".nflxso.net");
   if (imageUrl.protocol !== "https:" || !allowedHost) {
     return await fallbackToWikipedia() ?? NextResponse.json({ error: "Poster host is not allowed." }, { status: 403 });
   }
@@ -76,13 +76,15 @@ type AppleTrack = {
   trackViewUrl?: string;
 };
 
+type StreamingService = "Netflix" | "Prime Video" | "Disney+" | "Hulu" | "Apple TV+";
+
 type MoviePick = {
   title: string;
   year: number;
   poster: string;
   note: string;
   link: string;
-  source: string;
+  provider: StreamingService;
   rating?: number;
   ratingCount?: number;
 };
@@ -93,6 +95,8 @@ type SeriesPick = {
   poster: string;
   note: string;
   link: string;
+  language: string;
+  provider: StreamingService;
   rating?: number;
 };
 
@@ -104,6 +108,18 @@ function dayNumber(date: string) {
 function chooseOfDay<T>(items: T[], day: number, offset = 0) {
   if (!items.length) return null;
   return items[((day + offset) % items.length + items.length) % items.length];
+}
+
+function streamingSearch(service: StreamingService, title: string) {
+  const query = encodeURIComponent(title);
+  const searchUrls: Record<StreamingService, string> = {
+    "Netflix": `https://www.netflix.com/search?q=${query}`,
+    "Prime Video": `https://www.primevideo.com/search/ref=atv_nb_sr?phrase=${query}`,
+    "Disney+": `https://www.disneyplus.com/search?q=${query}`,
+    "Hulu": `https://www.hulu.com/search?q=${query}`,
+    "Apple TV+": `https://tv.apple.com/search?term=${query}`,
+  };
+  return searchUrls[service];
 }
 
 function cleanSummary(value: unknown) {
@@ -137,16 +153,36 @@ async function fetchLyricsHighlight(track: AppleTrack) {
     });
     if (!response.ok) return null;
     const data = await response.json();
+    const normalize = (value: string) => value.toLocaleLowerCase().normalize("NFKD").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    if (typeof data?.trackName === "string" && normalize(data.trackName) !== normalize(track.trackName)) return null;
+    if (typeof data?.artistName === "string" && normalize(data.artistName) !== normalize(track.artistName)) return null;
     const lyrics = typeof data?.plainLyrics === "string"
       ? data.plainLyrics
       : typeof data?.syncedLyrics === "string"
         ? data.syncedLyrics.replace(/\[\d{2}:\d{2}(?:\.\d{2,3})?\]\s*/g, "\n")
         : "";
-    const firstLine = lyrics.split(/\r?\n/).map((line: string) => line.trim()).find(Boolean);
-    if (!firstLine) return null;
+    const candidates = lyrics.split(/\r?\n/)
+      .map((line: string) => line.replace(/^\s*\[[^\]]+\]\s*/, "").trim())
+      .filter((line: string) => line && !/^\(?\s*(?:verse|chorus|bridge|intro|outro|instrumental|refrain)(?:\s+\d+)?\s*\)?$/i.test(line))
+      .filter((line: string) => /[\p{L}]/u.test(line) && line.split(/\s+/).length >= 4);
+    if (!candidates.length) return null;
+    // Lyric APIs sometimes split a sentence across lines. Skip dangling endings
+    // instead of presenting a fragment as if it were a complete thought.
+    const danglingEndings = new Set(["na", "ng", "mong", "kang", "nating", "ating", "iyong", "aking", "aking", "ang", "at", "sa", "si", "ni", "ay", "kung", "dahil", "para", "pero", "o", "the", "a", "an", "to", "of", "with", "and", "but", "if", "when", "that", "my", "your", "our"]);
+    const completeLines = candidates.filter((line: string) => {
+      const end = line.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+$/gu, "").split(/\s+/).at(-1) ?? "";
+      return !danglingEndings.has(end);
+    });
+    if (!completeLines.length) return null;
+    const highlight = completeLines.find((line: string) => /[.!?;,:]$/.test(line) && line.split(/\s+/).length <= 12)
+      ?? completeLines.find((line: string) => line.split(/\s+/).length <= 12)
+      ?? completeLines.find((line: string) => /[.!?;,:]$/.test(line));
+    if (!highlight) return null;
+    const words = highlight.split(/\s+/);
+    const excerpt = words.length <= 12 ? highlight : `${words.slice(0, 11).join(" ")}…`;
 
     return {
-      highlight: firstLine.split(/\s+/).slice(0, 10).join(" "),
+      highlight: excerpt,
       link: `https://lrclib.net/search/${encodeURIComponent(`${track.trackName} ${track.artistName}`)}`,
     };
   } catch {
@@ -154,29 +190,34 @@ async function fetchLyricsHighlight(track: AppleTrack) {
   }
 }
 
-async function fetchWikipediaPoster(title: string) {
-  try {
-    const params = new URLSearchParams({
-      action: "query",
-      format: "json",
-      prop: "pageimages",
-      piprop: "thumbnail",
-      pithumbsize: "500",
-      pilicense: "any",
-      titles: title,
-    });
-    const response = await fetch(`https://en.wikipedia.org/w/api.php?${params}`, {
-      cache: "no-store",
-      headers: { "User-Agent": "OurLittleWorld/1.0 (movie poster lookup)" },
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!response.ok) return "";
-    const data = await response.json();
-    const pages = Object.values(data?.query?.pages ?? {}) as Array<{ thumbnail?: { source?: string } }>;
-    return pages.find((page) => typeof page.thumbnail?.source === "string")?.thumbnail?.source ?? "";
-  } catch {
-    return "";
+async function fetchWikipediaPoster(title: string, year?: number) {
+  const pageTitles = year ? [`${title} (${year} film)`, title] : [title];
+  for (const pageTitle of pageTitles) {
+    try {
+      const params = new URLSearchParams({
+        action: "query",
+        format: "json",
+        prop: "pageimages",
+        piprop: "thumbnail",
+        pithumbsize: "500",
+        pilicense: "any",
+        titles: pageTitle,
+      });
+      const response = await fetch(`https://en.wikipedia.org/w/api.php?${params}`, {
+        cache: "no-store",
+        headers: { "User-Agent": "OurLittleWorld/1.0 (movie poster lookup)" },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) continue;
+      const data = await response.json();
+      const pages = Object.values(data?.query?.pages ?? {}) as Array<{ thumbnail?: { source?: string } }>;
+      const poster = pages.find((page) => typeof page.thumbnail?.source === "string")?.thumbnail?.source;
+      if (poster) return poster;
+    } catch {
+      // Try the simpler page title before falling back to generated artwork.
+    }
   }
+  return "";
 }
 
 function createPosterArtwork(title: string) {
@@ -189,6 +230,25 @@ function createPosterArtwork(title: string) {
   });
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600"><defs><linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8da9bf"/><stop offset=".52" stop-color="#e7b59d"/><stop offset="1" stop-color="#684e62"/></linearGradient><radialGradient id="glow"><stop stop-color="#fff4d9" stop-opacity=".9"/><stop offset="1" stop-color="#fff4d9" stop-opacity="0"/></radialGradient></defs><rect width="400" height="600" fill="url(#paper)"/><circle cx="300" cy="180" r="190" fill="url(#glow)"/><path d="M0 430 Q115 330 235 440 T470 415 V620 H0Z" fill="#393849" fill-opacity=".42"/><text x="200" y="90" text-anchor="middle" fill="#fffaf4" font-family="Georgia,serif" font-size="15" letter-spacing="5">TONIGHT'S PICK</text><text x="200" y="485" text-anchor="middle" fill="#fffaf4" font-family="Georgia,serif" font-size="30" font-weight="bold">${safeTitle}</text><path d="M155 525h90" stroke="#fffaf4" stroke-opacity=".75"/><text x="200" y="555" text-anchor="middle" fill="#fffaf4" font-family="Arial,sans-serif" font-size="12" letter-spacing="3">A LITTLE LOVE STORY</text></svg>`;
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+async function fetchAppleMoviePoster(title: string) {
+  try {
+    const params = new URLSearchParams({ term: title, media: "movie", entity: "movie", limit: "15", country: "ph", explicit: "No" });
+    const response = await fetch(`https://itunes.apple.com/search?${params}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(6_000),
+    });
+    if (!response.ok) return "";
+    const data = await response.json();
+    const normalize = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const match = Array.isArray(data?.results)
+      ? data.results.find((item: any) => typeof item?.trackName === "string" && normalize(item.trackName) === normalize(title))
+      : null;
+    return typeof match?.artworkUrl100 === "string" ? match.artworkUrl100.replace(/\d+x\d+bb\./, "600x900bb.") : "";
+  } catch {
+    return "";
+  }
 }
 
 async function fetchSong(day: number): Promise<SongPick | null> {
@@ -247,92 +307,46 @@ async function fetchSong(day: number): Promise<SongPick | null> {
 }
 
 async function fetchMovie(day: number): Promise<MoviePick | null> {
-  const searches = [
-    { country: "ph", term: "action movie" },
-    { country: "ph", term: "drama movie" },
-    { country: "ph", term: "science fiction movie" },
-    { country: "ph", term: "animation movie" },
-    { country: "ph", term: "thriller movie" },
+  // Keep a reviewed catalog because storefront search APIs do not expose reliable
+  // original-language and streaming-provider metadata across all five services.
+  const movies: Array<MoviePick & { language: "Filipino" | "English" | "Japanese" | "Korean" }> = [
+    { title: "Doll House", year: 2022, language: "Filipino", provider: "Netflix", poster: "https://occ-0-3012-33.1.nflxso.net/dnm/api/v6/S4oi7EPZbv2UEPaukW54OORa0S8/AAAABS1xypmieL5Wm53VhMg90xtc3hxC8gWO2165UzGABARS61psTykbweStjbDZu3Xw4U3jz98SvIbii97STNCyYl8--LmuQ64Y.png?r=5ff", note: "A Filipino rock singer tries to rebuild the bond he never had with his daughter.", link: streamingSearch("Netflix", "Doll House") },
+    { title: "Keys to the Heart", year: 2023, language: "Filipino", provider: "Netflix", poster: "", note: "An estranged boxer reconnects with his family and a musical younger brother.", link: streamingSearch("Netflix", "Keys to the Heart") },
+    { title: "The Adam Project", year: 2022, language: "English", provider: "Netflix", poster: "", note: "A time-traveling pilot teams up with his younger self on a family-sized adventure.", link: streamingSearch("Netflix", "The Adam Project") },
+    { title: "Enola Holmes", year: 2020, language: "English", provider: "Netflix", poster: "", note: "Sherlock Holmes's sharp-witted younger sister sets out to solve a mystery of her own.", link: streamingSearch("Netflix", "Enola Holmes") },
+    { title: "Zom 100: Bucket List of the Dead", year: 2023, language: "Japanese", provider: "Netflix", poster: "", note: "A burned-out office worker finds an unexpected bucket-list adventure during a zombie outbreak.", link: streamingSearch("Netflix", "Zom 100: Bucket List of the Dead") },
+    { title: "City Hunter", year: 2024, language: "Japanese", provider: "Netflix", poster: "", note: "A skilled but carefree private detective takes on a dangerous case in Tokyo.", link: streamingSearch("Netflix", "City Hunter") },
+    { title: "Ballerina", year: 2023, language: "Korean", provider: "Netflix", poster: "", note: "A former bodyguard sets out to fulfill her late friend's final wish.", link: streamingSearch("Netflix", "Ballerina") },
+    { title: "20th Century Girl", year: 2022, language: "Korean", provider: "Netflix", poster: "", note: "A teenager keeps a close eye on her friend's crush and finds a love story of her own.", link: streamingSearch("Netflix", "20th Century Girl") },
+    { title: "The Idea of You", year: 2024, language: "English", provider: "Prime Video", poster: "", note: "A single mother finds an unexpected connection with a young musician on tour.", link: streamingSearch("Prime Video", "The Idea of You") },
+    { title: "The Tomorrow War", year: 2021, language: "English", provider: "Prime Video", poster: "", note: "A teacher is drafted into a future war against an alien invasion.", link: streamingSearch("Prime Video", "The Tomorrow War") },
+    { title: "Soul", year: 2020, language: "English", provider: "Disney+", poster: "", note: "A music teacher takes an unexpected journey that changes how he sees life.", link: streamingSearch("Disney+", "Soul") },
+    { title: "Raya and the Last Dragon", year: 2021, language: "English", provider: "Disney+", poster: "", note: "A lone warrior searches for the last dragon to reunite a divided land.", link: streamingSearch("Disney+", "Raya and the Last Dragon") },
+    { title: "Prey", year: 2022, language: "English", provider: "Hulu", poster: "", note: "A Comanche warrior faces a highly advanced alien hunter on the Great Plains.", link: streamingSearch("Hulu", "Prey") },
+    { title: "Palm Springs", year: 2020, language: "English", provider: "Hulu", poster: "", note: "Two wedding guests get stuck reliving the same day and grow closer along the way.", link: streamingSearch("Hulu", "Palm Springs") },
+    { title: "CODA", year: 2021, language: "English", provider: "Apple TV+", poster: "", note: "The only hearing member of her family discovers her own gift for singing.", link: streamingSearch("Apple TV+", "CODA") },
+    { title: "Tetris", year: 2023, language: "English", provider: "Apple TV+", poster: "", note: "A game designer risks everything to bring Tetris to the world.", link: streamingSearch("Apple TV+", "Tetris") },
   ];
-
-  const searchResults = await Promise.all(searches.map(async (search) => {
-      try {
-        const params = new URLSearchParams({
-          term: search.term,
-          media: "movie",
-          entity: "movie",
-          limit: "50",
-          country: search.country,
-          explicit: "No",
-        });
-        const response = await fetch(`https://itunes.apple.com/search?${params}`, {
-          cache: "no-store",
-          signal: AbortSignal.timeout(8_000),
-        });
-        if (!response.ok) {
-          console.warn(`[Daily recommendations] Apple movie search (${search.country}/${search.term}) returned ${response.status}.`);
-          return [];
-        }
-        const data = await response.json();
-        return Array.isArray(data?.results)
-          ? data.results.filter((movie: any) =>
-              typeof movie?.trackName === "string" &&
-              typeof movie?.trackViewUrl === "string" &&
-              typeof movie?.averageUserRating === "number" && movie.averageUserRating >= 4.2 &&
-              typeof movie?.userRatingCount === "number" && movie.userRatingCount >= 500,
-            )
-          : [];
-      } catch (error) {
-        console.warn(`[Daily recommendations] Apple movie search (${search.country}/${search.term}) failed.`, error);
-        return [];
-      }
-    }));
-
-  const movies = [...new Map(searchResults.flat().map((movie: any) => [movie.trackViewUrl, movie])).values()];
-  const movie = chooseOfDay(movies, day);
-  if (movie) {
-    const releaseYear = typeof movie.releaseDate === "string" ? Number(movie.releaseDate.slice(0, 4)) : 0;
-    return {
-      title: movie.trackName,
-      year: Number.isInteger(releaseYear) ? releaseYear : 0,
-      poster: typeof movie.artworkUrl100 === "string"
-        ? movie.artworkUrl100.replace("100x100", "342x342")
-        : await fetchWikipediaPoster(movie.trackName) || createPosterArtwork(movie.trackName),
-      note: cleanSummary(movie.longDescription || movie.shortDescription) || `A movie pick from the Apple catalog${movie.primaryGenreName ? ` in ${movie.primaryGenreName.toLowerCase()}` : ""}.`,
-      link: movie.trackViewUrl,
-      source: "Apple catalog",
-      rating: movie.averageUserRating,
-      ratingCount: movie.userRatingCount,
-    };
-  }
-
-  const offlineMovies: MoviePick[] = [
-    { title: "The Shawshank Redemption", year: 1994, poster: "", note: "A moving story of friendship and hope inside a prison.", link: "https://www.imdb.com/find/?q=The%20Shawshank%20Redemption", source: "Curated picks" },
-    { title: "The Dark Knight", year: 2008, poster: "", note: "A gripping crime thriller that raises the stakes for Gotham and Batman.", link: "https://www.imdb.com/find/?q=The%20Dark%20Knight", source: "Curated picks" },
-    { title: "The Lord of the Rings: The Fellowship of the Ring", year: 2001, poster: "", note: "An acclaimed fantasy adventure begins an epic journey across Middle-earth.", link: "https://www.imdb.com/find/?q=The%20Lord%20of%20the%20Rings%20The%20Fellowship%20of%20the%20Ring", source: "Curated picks" },
-    { title: "Inception", year: 2010, poster: "", note: "A clever, high-stakes science fiction heist inside a world of dreams.", link: "https://www.imdb.com/find/?q=Inception", source: "Curated picks" },
-    { title: "Interstellar", year: 2014, poster: "", note: "A sweeping space adventure about exploration, family, and time.", link: "https://www.imdb.com/find/?q=Interstellar", source: "Curated picks" },
-    { title: "Spirited Away", year: 2001, poster: "", note: "A richly imagined animated fantasy from Studio Ghibli.", link: "https://www.imdb.com/find/?q=Spirited%20Away", source: "Curated picks" },
-    { title: "Coco", year: 2017, poster: "", note: "A colorful Pixar adventure about music, family, and remembrance.", link: "https://www.imdb.com/find/?q=Coco%202017", source: "Curated picks" },
-    { title: "Parasite", year: 2019, poster: "", note: "A tense, darkly funny thriller about two families and a widening divide.", link: "https://www.imdb.com/find/?q=Parasite%202019", source: "Curated picks" },
-    { title: "The Grand Budapest Hotel", year: 2014, poster: "", note: "A stylish comedy adventure full of eccentric characters and capers.", link: "https://www.imdb.com/find/?q=The%20Grand%20Budapest%20Hotel", source: "Curated picks" },
-    { title: "Spider-Man: Into the Spider-Verse", year: 2018, poster: "", note: "An inventive, acclaimed animated superhero adventure.", link: "https://www.imdb.com/find/?q=Spider-Man%20Into%20the%20Spider-Verse", source: "Curated picks" },
-  ];
-  const offlineMovie = chooseOfDay(offlineMovies, day);
-  if (!offlineMovie) return null;
-  return { ...offlineMovie, poster: await fetchWikipediaPoster(offlineMovie.title) || createPosterArtwork(offlineMovie.title) };
+  const movie = chooseOfDay(movies.filter((item) => ["Filipino", "English", "Japanese", "Korean"].includes(item.language)), day);
+  if (!movie) return null;
+  const poster = movie.poster || await fetchAppleMoviePoster(movie.title) || await fetchWikipediaPoster(movie.title, movie.year) || createPosterArtwork(movie.title);
+  return { ...movie, poster };
 
 }
 
 const notableSeries: SeriesPick[] = [
-  { title: "Breaking Bad", years: "2008-2013", poster: "", note: "A chemistry teacher's transformation into a drug kingpin becomes a gripping crime drama.", link: "https://www.tvmaze.com/search?q=Breaking%20Bad" },
-  { title: "Sherlock", years: "2010-2017", poster: "", note: "A fast, clever modern take on the famous detective stories.", link: "https://www.tvmaze.com/search?q=Sherlock" },
-  { title: "The Office", years: "2005-2013", poster: "", note: "An acclaimed workplace comedy with a warm ensemble cast.", link: "https://www.tvmaze.com/search?q=The%20Office" },
-  { title: "Chernobyl", years: "2019", poster: "", note: "A widely praised historical drama about the 1986 nuclear disaster.", link: "https://www.tvmaze.com/search?q=Chernobyl" },
-  { title: "Stranger Things", years: "2016-2025", poster: "", note: "A hugely popular science fiction mystery with a close-knit group of friends.", link: "https://www.tvmaze.com/search?q=Stranger%20Things" },
-  { title: "Game of Thrones", years: "2011-2019", poster: "", note: "A globally popular fantasy drama of rival families and shifting power.", link: "https://www.tvmaze.com/search?q=Game%20of%20Thrones" },
-  { title: "The Queen's Gambit", years: "2020", poster: "", note: "A stylish, acclaimed drama about a gifted chess player finding her way.", link: "https://www.tvmaze.com/search?q=The%20Queen%27s%20Gambit" },
-  { title: "Friends", years: "1994-2004", poster: "", note: "A landmark, widely loved sitcom about six friends in New York.", link: "https://www.tvmaze.com/search?q=Friends" },
+  { title: "Replacing Chef Chico", years: "2023", poster: "", note: "A sous-chef fights to save her Filipino fine-dining restaurant after its head chef falls into a coma.", link: streamingSearch("Netflix", "Replacing Chef Chico"), language: "Filipino", provider: "Netflix" },
+  { title: "Trese", years: "2021", poster: "", note: "A detective protects Manila from supernatural forces drawn from Filipino folklore.", link: streamingSearch("Netflix", "Trese"), language: "Filipino", provider: "Netflix" },
+  { title: "Wednesday", years: "2022-present", poster: "", note: "Wednesday Addams investigates a mystery at Nevermore Academy.", link: streamingSearch("Netflix", "Wednesday"), language: "English", provider: "Netflix" },
+  { title: "The Queen's Gambit", years: "2020", poster: "", note: "A gifted chess player pursues mastery while finding her place in the world.", link: streamingSearch("Netflix", "The Queen's Gambit"), language: "English", provider: "Netflix" },
+  { title: "The Summer I Turned Pretty", years: "2022-present", poster: "", note: "A young woman navigates first love, heartbreak, and summers that change everything.", link: streamingSearch("Prime Video", "The Summer I Turned Pretty"), language: "English", provider: "Prime Video" },
+  { title: "Fallout", years: "2024-present", poster: "", note: "Centuries after the apocalypse, a vault dweller ventures into a strange and dangerous world.", link: streamingSearch("Prime Video", "Fallout"), language: "English", provider: "Prime Video" },
+  { title: "Moving", years: "2023", poster: "", note: "Young people with hidden superpowers and their parents face a dangerous conspiracy.", link: streamingSearch("Disney+", "Moving"), language: "Korean", provider: "Disney+" },
+  { title: "Gannibal", years: "2022-present", poster: "", note: "A village police officer uncovers unsettling secrets in a remote Japanese community.", link: streamingSearch("Disney+", "Gannibal"), language: "Japanese", provider: "Disney+" },
+  { title: "The Bear", years: "2022-present", poster: "", note: "A fine-dining chef returns home to run his family's neighborhood sandwich shop.", link: streamingSearch("Hulu", "The Bear"), language: "English", provider: "Hulu" },
+  { title: "Only Murders in the Building", years: "2021-present", poster: "", note: "Three true-crime fans start a podcast while investigating a murder in their building.", link: streamingSearch("Hulu", "Only Murders in the Building"), language: "English", provider: "Hulu" },
+  { title: "Ted Lasso", years: "2020-present", poster: "", note: "An optimistic American football coach takes charge of an English soccer team.", link: streamingSearch("Apple TV+", "Ted Lasso"), language: "English", provider: "Apple TV+" },
+  { title: "Severance", years: "2022-present", poster: "", note: "Office workers undergo a procedure that separates their work and personal memories.", link: streamingSearch("Apple TV+", "Severance"), language: "English", provider: "Apple TV+" },
 ];
 
 async function fetchCuratedSeries(day: number): Promise<SeriesPick | null> {
@@ -341,34 +355,7 @@ async function fetchCuratedSeries(day: number): Promise<SeriesPick | null> {
 }
 
 async function fetchSeries(day: number): Promise<SeriesPick | null> {
-  try {
-    const response = await fetch(`https://api.tvmaze.com/shows?page=${day % 100}`, {
-      cache: "no-store",
-      headers: { "User-Agent": "OurLittleWorld/1.0 (daily recommendations)" },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) return fetchCuratedSeries(day);
-    const data = await response.json();
-    const shows = Array.isArray(data)
-      ? data
-          .filter((show: any) => typeof show?.name === "string" && typeof show?.rating?.average === "number" && show.rating.average >= 7.5 && typeof show?.weight === "number" && show.weight >= 40)
-      : [];
-    const show = chooseOfDay(shows, day);
-    if (!show) return fetchCuratedSeries(day);
-    const startYear = typeof show.premiered === "string" ? show.premiered.slice(0, 4) : "";
-    const endYear = typeof show.ended === "string" ? show.ended.slice(0, 4) : "";
-    const years = startYear ? `${startYear}${endYear && endYear !== startYear ? `-${endYear}` : endYear ? "" : "-present"}` : "";
-    return {
-      title: show.name,
-      years,
-      poster: typeof show.image?.medium === "string" ? show.image.medium : "",
-      note: cleanSummary(show.summary) || (Array.isArray(show.genres) && show.genres.length ? `A ${show.genres.join(", ").toLowerCase()} series.` : "A series pick from the TVmaze catalog."),
-      link: typeof show.url === "string" ? show.url : "https://www.tvmaze.com/",
-      rating: show.rating.average,
-    };
-  } catch {
-    return fetchCuratedSeries(day);
-  }
+  return fetchCuratedSeries(day);
 }
 
 export async function GET(request: Request) {
@@ -384,7 +371,6 @@ export async function GET(request: Request) {
   const [song, movie, series] = await Promise.all([fetchSong(day), fetchMovie(day), fetchSeries(day + 2)]);
   const warnings: string[] = [];
   if (!song) warnings.push("Song catalog could not be reached right now.");
-  if (!series) warnings.push("TVmaze could not provide a series pick right now.");
 
   if (!song && !movie && !series) {
     return NextResponse.json(
@@ -394,7 +380,7 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.json(
-    { song, movie, series, warnings, source: "playlist-and-public-catalogs", date },
+    { song, movie, series, warnings, source: "playlist-and-curated-streaming-catalog", date },
     { headers: { "Cache-Control": "no-store" } },
   );
 }
