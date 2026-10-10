@@ -56,7 +56,7 @@ async function loadEngineWithProgress(onProgress?: (report: OpenWhenLoadingProgr
   }
   try {
     const engine = await loadEngine();
-    publishProgress({ text: "Model ready on this device.", progress: 1 });
+    publishProgress({ text: "Ready.", progress: 1 });
     return engine;
   } finally {
     if (onProgress) progressListeners.delete(onProgress);
@@ -78,7 +78,7 @@ export async function generateOpenWhenMessage(
   onProgress: (report: OpenWhenLoadingProgress) => void,
 ) {
   const engine = await loadEngineWithProgress(onProgress);
-  onProgress({ progress: null, text: "Writing your note on this device…" });
+  onProgress({ progress: null, text: "Writing your note…" });
   const prompt = OPEN_WHEN_PROMPTS[feeling].context;
   const result = await engine.chat.completions.create({
     messages: [
@@ -106,7 +106,7 @@ export async function generateModernPoem(
   onProgress: (report: OpenWhenLoadingProgress) => void,
 ) {
   const engine = await loadEngineWithProgress(onProgress);
-  onProgress({ progress: null, text: "Writing a poem on this device..." });
+  onProgress({ progress: null, text: "Writing a poem..." });
   let rawPoem = "";
   let words: string[] = [];
 

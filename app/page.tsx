@@ -295,7 +295,7 @@ export default function HomePage() {
     void preloadOpenWhenModel((report) => {
       if (active) setModelWarmupProgress(report);
     }).then((ready) => {
-      if (active) setModelWarmupProgress(ready ? { text: "Ready on this device", progress: 1 } : null);
+      if (active) setModelWarmupProgress(ready ? { text: "Ready", progress: 1 } : null);
     });
     return () => {
       active = false;
@@ -619,7 +619,7 @@ export default function HomePage() {
     setFeelingMessage("");
     setFeelingMessageSource("");
     setFeelingMessageLoading(true);
-    setFeelingModelProgress({ text: "Starting the on-device model…", progress: 0 });
+    setFeelingModelProgress({ text: "Starting…", progress: 0 });
     try {
       const message = await generateOpenWhenMessage(feeling, (report) => {
         setFeelingModelProgress({ text: report.text, progress: report.progress });
@@ -1084,7 +1084,7 @@ export default function HomePage() {
               </div>
               {modernPoemLoading ? (
                 <div className="open-when-loading poem-model-loading" role="status" aria-live="polite">
-                  <p>{poemModelProgress?.text ?? "Writing your poem on this device…"}</p>
+                  <p>{poemModelProgress?.text ?? "Writing your poem…"}</p>
                   <LoveLoadingAnimation />
                   <LoadingProgressBar label="Writing poem" progress={poemModelProgress?.progress} />
                 </div>
