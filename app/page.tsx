@@ -63,6 +63,9 @@ type DailyCaptionResponse = {
 };
 
 type DailyJokeResponse = { joke?: unknown; date?: unknown; source?: unknown };
+type DailyWord = { word: string; pronunciation: string; meaning: string };
+type DailyWordResponse = Partial<DailyWord> & { date?: string; source?: string };
+
 function hasDailyPicks(value: DailyRecommendations | null | undefined): value is DailyRecommendations {
   const allowedLanguages = ["filipino", "tagalog", "english", "japanese", "korean"];
   const allowedProviders = ["netflix", "prime video", "disney+", "hulu", "apple tv+"];
@@ -255,6 +258,9 @@ export default function HomePage() {
   const [dailyCaption, setDailyCaption] = useState("");
   const [dailyJoke, setDailyJoke] = useState("");
   const [dailyJokeUnavailable, setDailyJokeUnavailable] = useState(false);
+  const [dailyWord, setDailyWord] = useState<DailyWord | null>(null);
+  const [dailyWordLoading, setDailyWordLoading] = useState(true);
+  const [dailyWordUnavailable, setDailyWordUnavailable] = useState(false);
   const [modernPoem, setModernPoem] = useState("");
   const [modernPoemLoading, setModernPoemLoading] = useState(false);
   const [modernPoemError, setModernPoemError] = useState(false);
@@ -300,6 +306,47 @@ export default function HomePage() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const date = todayKey();
+    const cacheKey = `daily-word-v1-${date}`;
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached) as DailyWord;
+        if (parsed.word && typeof parsed.pronunciation === "string" && parsed.meaning) {
+          setDailyWord(parsed);
+          setDailyWordLoading(false);
+          return () => { active = false; };
+        }
+      }
+    } catch {
+      // Keep the built-in word while loading a fresh API response.
+    }
+
+    void fetch(`/api/word-of-day?date=${encodeURIComponent(date)}`, { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error("Daily word request failed");
+        return response.json() as Promise<DailyWordResponse>;
+      })
+      .then((data) => {
+        if (!active || typeof data.word !== "string" || typeof data.pronunciation !== "string" || typeof data.meaning !== "string") return;
+        const word = { word: data.word, pronunciation: data.pronunciation, meaning: data.meaning };
+        setDailyWord(word);
+        setDailyWordLoading(false);
+        try { localStorage.setItem(cacheKey, JSON.stringify(word)); } catch { /* Keep the word in memory. */ }
+      })
+      .catch((error) => {
+        console.warn("[Word of the day] Dictionary lookup unavailable.", error);
+        if (active) {
+          setDailyWordLoading(false);
+          setDailyWordUnavailable(true);
+        }
+      });
+
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
@@ -895,6 +942,7 @@ export default function HomePage() {
               )}
             </section>
 
+            <div className="daily-delights-grid">
             <section className="section daily-joke-section" aria-labelledby="daily-joke-title">
               <div className="recommendation-heading">
                 <h2 id="daily-joke-title">Daily Joke</h2>
@@ -904,6 +952,21 @@ export default function HomePage() {
                 {dailyJoke ? <p>{dailyJoke}</p> : dailyJokeUnavailable ? <p>Today’s joke is taking a little longer. Try again later.</p> : <LoadingMessage>Finding today’s joke…</LoadingMessage>}
               </div>
             </section>
+
+            <section className="section daily-word-section" aria-labelledby="daily-word-title">
+              <div className="recommendation-heading">
+                <h2 id="daily-word-title">Word of the Day</h2>
+              </div>
+              <div className="card daily-joke-card daily-word-card">
+                <span className="daily-joke-emoji" aria-hidden="true">📖</span>
+                {dailyWord ? <div>
+                  <p className="daily-word-name">{dailyWord.word}</p>
+                  <p className="daily-word-pronunciation">/{dailyWord.pronunciation}/</p>
+                  <p className="daily-word-meaning">{dailyWord.meaning}</p>
+                </div> : dailyWordLoading ? <LoadingMessage>Finding today’s word…</LoadingMessage> : dailyWordUnavailable ? <p className="daily-word-error">Today’s word is unavailable. Please try again later.</p> : null}
+              </div>
+            </section>
+            </div>
 
             <section className="section">
               <div className="card love-note-card">

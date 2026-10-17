@@ -209,11 +209,19 @@ a { color: inherit; }
 .recommendation-attribution a:not(:first-child) { text-decoration: underline; text-underline-offset: 2px; }
 .fetching-state { min-height: 76px; display: flex; align-items: center; justify-content: center; gap: 11px; color: var(--muted); font-size: 13px; text-align: center; }
 .recommendation-fallback, .game-fallback { margin: 0 0 12px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 253, 249, 0.72); color: var(--muted); font-size: 12px; line-height: 1.5; }
-.daily-joke-section { padding-top: 18px; }
+.daily-delights-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding-top: 18px; }
+.daily-joke-section, .daily-word-section { display: flex; min-width: 0; flex-direction: column; padding-top: 0; }
 .daily-joke-card { display: flex; align-items: center; gap: 16px; padding: clamp(18px, 3vw, 28px); border: 1px solid var(--line); border-radius: 20px; background: rgba(255, 253, 249, 0.82); box-shadow: 0 10px 35px var(--shadow); }
+.daily-joke-section .daily-joke-card, .daily-word-section .daily-word-card { flex: 1; }
 .daily-joke-emoji { display: grid; flex: 0 0 46px; width: 46px; height: 46px; place-items: center; border-radius: 50%; background: var(--rose-soft); font-size: 23px; }
 .daily-joke-card p { margin: 0; color: var(--ink); font-family: "Playfair Display", serif; font-size: clamp(17px, 2.2vw, 22px); line-height: 1.5; }
 .daily-joke-card .fetching-state { min-height: 46px; justify-content: flex-start; }
+.daily-word-card { min-height: 124px; }
+.daily-word-card > div { min-width: 0; }
+.daily-word-card .daily-word-name { font-size: clamp(21px, 2.5vw, 27px); font-weight: 700; }
+.daily-word-card .daily-word-pronunciation { margin-top: 2px; color: var(--muted); font-family: inherit; font-size: 12px; }
+.daily-word-card .daily-word-meaning { margin-top: 10px; font-family: inherit; font-size: 14px; line-height: 1.55; }
+@media (max-width: 640px) { .daily-delights-grid { grid-template-columns: 1fr; } }
 .checkin { background: #f1e8dc; border-color: #e4d7c6; }
 .checkin textarea {
   width: 100%; min-height: 80px; resize: vertical; border: 1px solid var(--line);
