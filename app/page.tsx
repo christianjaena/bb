@@ -1,7 +1,7 @@
 ﻿
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RELATIONSHIP_CONFIG } from "@/lib/data";
 import { createShareableUrl } from "@/lib/share";
 import { OPEN_WHEN_PROMPTS, type OpenWhenFeeling } from "@/lib/open-when-prompts";
@@ -255,6 +255,8 @@ function relationshipDuration(startDate: string, now: Date) {
 
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>("us");
+  const musicRef = useRef<HTMLAudioElement>(null);
+  const [heroJpgPanel, setHeroJpgPanel] = useState(0);
   const [dailyCaption, setDailyCaption] = useState("");
   const [dailyJoke, setDailyJoke] = useState("");
   const [dailyJokeUnavailable, setDailyJokeUnavailable] = useState(false);
@@ -293,6 +295,38 @@ export default function HomePage() {
   const [selectedChoices, setSelectedChoices] = useState<Record<string, string>>({});
   const kmApart = distanceKm();
   const hoursAway = Math.abs(timezoneOffsetMinutes("Asia/Manila", clockNow) - timezoneOffsetMinutes("Pacific/Auckland", clockNow)) / 60;
+
+  useEffect(() => {
+    const audio = musicRef.current;
+    if (!audio) return;
+    audio.volume = 0.1;
+    audio.loop = true;
+
+    const startMusic = () => {
+      void audio.play().then(() => {
+        window.removeEventListener("pointerdown", startMusic);
+        window.removeEventListener("keydown", startMusic);
+      }).catch(() => {
+        // Browsers can block sound until the visitor interacts with the page.
+      });
+    };
+
+    startMusic();
+    window.addEventListener("pointerdown", startMusic, { once: true });
+    window.addEventListener("keydown", startMusic, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", startMusic);
+      window.removeEventListener("keydown", startMusic);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "us") return;
+    const panelTimer = window.setInterval(() => {
+      setHeroJpgPanel((panel) => (panel + 1) % 3);
+    }, 2600);
+    return () => window.clearInterval(panelTimer);
+  }, [tab]);
 
   useEffect(() => {
     let active = true;
@@ -746,6 +780,7 @@ export default function HomePage() {
 
   return (
     <div className="app-shell">
+      <audio ref={musicRef} src="/Mirrors%20(Justin%20Timberlake)%20-%20Piano%20Cover%20%5Bwith%20lyrics%5D.mp3" autoPlay loop preload="auto" />
       <header className="topbar">
         <div className="max-page topbar-inner">
           <button className="brand" onClick={() => { setTab("us"); setFeelingModalOpen(false); }}>
@@ -782,16 +817,9 @@ export default function HomePage() {
                 </p>
               </div>
 
-              <div
-                className="hero-photo"
-                style={{
-                  backgroundImage:
-                    'linear-gradient(180deg, rgba(22,20,18,0.08), rgba(22,20,18,0.46)), url("/hero-romance.avif")',
-                }}
-              >
-                <div className="hero-photo-caption">
-                  <small>From here to there</small>
-                  <strong>{dailyCaption || "Saving you a seat for our next call."}</strong>
+              <div className="hero-media">
+                <div className="hero-photo">
+                  <img className="hero-photo-image hero-photo-image-full is-active" src="/hero-romance.jpg" alt="A photo booth collage of us" style={{ objectPosition: `center ${heroJpgPanel * 50}%` }} />
                 </div>
               </div>
             </section>
@@ -975,6 +1003,7 @@ export default function HomePage() {
                     <p>I love you every day.</p>
                     <span className="brand-heart-orange" aria-hidden="true">♥</span>
                   </div>
+                  {dailyCaption && <p className="love-note-compliment">{dailyCaption}</p>}
               </div>
             </section>
 
