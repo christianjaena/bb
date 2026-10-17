@@ -65,6 +65,8 @@ a { color: inherit; }
   padding: 8px 10px; border-radius: 999px; font-size: 12px;
 }
 .nav button:hover, .nav button.active { background: #fffaf4; color: var(--ink); }
+.music-prompt { border: 1px solid rgba(115, 151, 189, 0.55); border-radius: 999px; background: #fffaf4; color: var(--ink); padding: 8px 12px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.music-prompt:hover { border-color: var(--blue); background: white; }
 
 .hero {
   display: grid; grid-template-columns: 1fr; gap: 24px;

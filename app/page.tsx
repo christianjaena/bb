@@ -256,6 +256,7 @@ function relationshipDuration(startDate: string, now: Date) {
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>("us");
   const musicRef = useRef<HTMLAudioElement>(null);
+  const [musicNeedsGesture, setMusicNeedsGesture] = useState(false);
   const [heroJpgPanel, setHeroJpgPanel] = useState(0);
   const [dailyCaption, setDailyCaption] = useState("");
   const [dailyJoke, setDailyJoke] = useState("");
@@ -304,9 +305,11 @@ export default function HomePage() {
 
     const startMusic = () => {
       void audio.play().then(() => {
+        setMusicNeedsGesture(false);
         window.removeEventListener("pointerdown", startMusic);
         window.removeEventListener("keydown", startMusic);
       }).catch(() => {
+        setMusicNeedsGesture(true);
         // Browsers can block sound until the visitor interacts with the page.
       });
     };
@@ -319,6 +322,18 @@ export default function HomePage() {
       window.removeEventListener("keydown", startMusic);
     };
   }, []);
+
+  const startMusicFromButton = async () => {
+    const audio = musicRef.current;
+    if (!audio) return;
+    audio.volume = 0.1;
+    try {
+      await audio.play();
+      setMusicNeedsGesture(false);
+    } catch {
+      setMusicNeedsGesture(true);
+    }
+  };
 
   useEffect(() => {
     if (tab !== "us") return;
@@ -780,7 +795,7 @@ export default function HomePage() {
 
   return (
     <div className="app-shell">
-      <audio ref={musicRef} src="/Mirrors%20(Justin%20Timberlake)%20-%20Piano%20Cover%20%5Bwith%20lyrics%5D.mp3" autoPlay loop preload="auto" />
+      <audio ref={musicRef} src="/mirrors.mp3" autoPlay loop preload="auto" />
       <header className="topbar">
         <div className="max-page topbar-inner">
           <button className="brand" onClick={() => { setTab("us"); setFeelingModalOpen(false); }}>
@@ -795,6 +810,7 @@ export default function HomePage() {
               </button>
             ))}
           </nav>
+          {musicNeedsGesture && <button className="music-prompt" type="button" onClick={startMusicFromButton}>♫ Play music</button>}
         </div>
       </header>
 
